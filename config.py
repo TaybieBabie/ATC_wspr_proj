@@ -19,3 +19,27 @@ MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
 
 # LiveATC settings
 LIVEATC_STREAM_URL = "https://s1-bos.liveatc.net/kmsp3_twr_12r?nocache=2025071302515286063"  # Replace with your local feed
+
+# Airport/Monitoring Area Configuration
+AIRPORT_LAT = 40.6413  # Your airport latitude (e.g., JFK)
+AIRPORT_LON = -73.7781  # Your airport longitude
+SEARCH_RADIUS_NM = 30  # Nautical miles radius to monitor
+
+# ADS-B Configuration
+ENABLE_ADSB = True
+ADSB_SOURCE = 'opensky'  # Options: 'opensky', 'adsbx', 'local'
+
+# OpenSky Network (free, requires account for better rate limits)
+OPENSKY_USERNAME = ''  # Leave empty for anonymous access
+OPENSKY_PASSWORD = ''
+
+# ADS-B Exchange (optional, requires API key)
+ADSBX_API_KEY = ''
+
+# Local dump1090 (if running RTL-SDR receiver)
+DUMP1090_URL = 'http://localhost:8080'
+
+# Correlation Settings
+CORRELATION_WINDOW = 30  # seconds
+ALTITUDE_TOLERANCE = 500  # feet
+POSITION_TOLERANCE = 5  # nautical miles

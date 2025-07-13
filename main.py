@@ -9,13 +9,15 @@ from transcribe import transcribe_audio
 from analyze import analyze_transcript
 from config import (ATC_FREQUENCY, LIVEATC_STREAM_URL, VAD_THRESHOLD,
                     SILENCE_DURATION, AUDIO_DIR)
-
+from adsb_tracker import ADSBTracker, OpenSkySource
+from correlator import ATCCorrelator
 
 class ATCMonitor:
     """Main monitoring system that coordinates recording, transcription, and analysis"""
 
     def __init__(self, stream_url=None, use_system_audio=False,
-                 vad_threshold=VAD_THRESHOLD, silence_duration=SILENCE_DURATION):
+                 vad_threshold=VAD_THRESHOLD, silence_duration=SILENCE_DURATION,
+                 enable_adsb=True, adsb_source='opensky'):
         self.stream_url = stream_url or LIVEATC_STREAM_URL
         self.use_system_audio = use_system_audio
         self.vad_threshold = vad_threshold
@@ -32,6 +34,89 @@ class ATCMonitor:
             'callsigns_detected': set(),
             'start_time': None
         }
+
+        # Initialize ADS-B tracking
+        self.enable_adsb = enable_adsb
+        if self.enable_adsb:
+            # Select ADS-B data source
+            if adsb_source == 'opensky':
+                source = OpenSkySource(OPENSKY_USERNAME, OPENSKY_PASSWORD)
+            elif adsb_source == 'local':
+                source = LocalADSBSource()
+            else:
+                source = OpenSkySource()  # default
+
+            self.adsb_tracker = ADSBTracker(source)
+            self.correlator = ATCCorrelator(self.adsb_tracker)
+
+            # Start ADS-B update thread
+            self.adsb_thread = threading.Thread(target=self.adsb_update_worker)
+            self.adsb_thread.daemon = True
+            self.adsb_thread.start()
+
+    def adsb_update_worker(self):
+        """Background thread to update ADS-B data"""
+        while self.is_monitoring:
+            try:
+                aircraft = self.adsb_tracker.update_aircraft_positions()
+                print(f"📡 ADS-B Update: {len(aircraft)} aircraft in area")
+                time.sleep(30)  # Update every 30 seconds
+            except Exception as e:
+                print(f"❌ ADS-B update error: {e}")
+                time.sleep(60)  # Wait longer on error
+
+    def process_analysis(self, analysis, transcript_text):
+        """Enhanced analysis with ADS-B correlation"""
+        # Original analysis
+        super().process_analysis(analysis, transcript_text)
+
+        # ADS-B correlation
+        if self.enable_adsb:
+            correlation = self.correlator.correlate_transcript(
+                transcript_text, datetime.now()
+            )
+
+            # Process correlation results
+            if correlation['uncorrelated_callsigns']:
+                print(f"⚠️  Uncorrelated callsigns: {', '.join(correlation['uncorrelated_callsigns'])}")
+
+            # Process alerts
+            for alert in correlation['alerts']:
+                if alert['type'] == 'untracked_aircraft':
+                    self.generate_enhanced_alert(alert, transcript_text, correlation)
+                elif alert['type'] == 'possible_non_transponder':
+                    self.generate_possible_alert(alert, transcript_text, correlation)
+
+            # Update stats
+            self.stats['correlation_alerts'] = self.stats.get('correlation_alerts', 0) + len(correlation['alerts'])
+
+    def generate_enhanced_alert(self, alert, transcript, correlation):
+        """Enhanced alert with ADS-B correlation data"""
+        print("\n" + "=" * 60)
+        print("🚨 ALERT: UNTRACKED AIRCRAFT DETECTED 🚨")
+        print("=" * 60)
+        print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Callsign: {alert['callsign']}")
+        print(f"Reported altitude: {alert.get('altitude', 'Unknown')} ft")
+        print(f"Transcript: {transcript}")
+        print("\n📡 ADS-B Correlation:")
+        print(f"  - Aircraft in area: {len(self.adsb_tracker.current_aircraft)}")
+        print(f"  - No ADS-B match found for {alert['callsign']}")
+
+        # List nearby aircraft
+        if alert.get('altitude'):
+            nearby = self.adsb_tracker.get_aircraft_at_altitude(
+                alert['altitude'], tolerance=1000
+            )
+            if nearby:
+                print(f"\n  Nearby aircraft at similar altitude:")
+                for ac in nearby[:5]:  # Limit to 5
+                    print(f"    - {ac}")
+
+        print("=" * 60 + "\n")
+
+        # Log to file
+        self.log_alert(alert, transcript, correlation)
 
     def recording_callback(self, audio_file):
         """Callback when a new audio file is saved"""
