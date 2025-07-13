@@ -8,8 +8,8 @@ from record_audio import LiveATCRecorder, SystemAudioRecorder
 from transcribe import transcribe_audio
 from analyze import analyze_transcript
 from config import (ATC_FREQUENCY, LIVEATC_STREAM_URL, VAD_THRESHOLD,
-                    SILENCE_DURATION, AUDIO_DIR)
-from adsb_tracker import ADSBTracker, OpenSkySource
+                    SILENCE_DURATION, AUDIO_DIR, OPENSKY_USERNAME, OPENSKY_PASSWORD)
+from adsb_tracker import ADSBTracker, OpenSkySource, LocalADSBSource
 from correlator import ATCCorrelator
 
 class ATCMonitor:
