@@ -54,6 +54,26 @@ class ATCMonitor:
             self.adsb_thread.daemon = True
             self.adsb_thread.start()
 
+    def test_gpu_setup(self):
+        import torch
+        print(f"PyTorch version: {torch.__version__}")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"CUDA version: {torch.version.cuda}")
+            print(f"GPU count: {torch.cuda.device_count()}")
+            print(f"Current GPU: {torch.cuda.current_device()}")
+            print(f"GPU name: {torch.cuda.get_device_name(0)}")
+            print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
+
+        # Test faster-whisper GPU
+        try:
+            from faster_whisper import WhisperModel
+            model = WhisperModel("tiny", device="cuda", compute_type="float16")
+            print("✅ faster-whisper GPU test successful")
+            del model
+        except Exception as e:
+            print(f"❌ faster-whisper GPU test failed: {e}")
+
     def adsb_update_worker(self):
         """Background thread to update ADS-B data"""
         while self.is_monitoring:
@@ -237,6 +257,9 @@ class ATCMonitor:
         print(f"⏱️  Silence Duration: {self.silence_duration}s")
         print(f"📡 Source: {'System Audio' if self.use_system_audio else self.stream_url}")
         print("\n" + "-" * 60)
+
+        #test gpu acel config
+        self.test_gpu_setup()
 
         # Start transcription worker thread
         self.transcription_thread = threading.Thread(target=self.transcription_worker)

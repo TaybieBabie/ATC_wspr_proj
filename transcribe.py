@@ -5,8 +5,9 @@ from datetime import datetime
 import json
 import os
 import librosa
+import gc
 
-from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE
+from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER
 
 
 class GPUWhisperTranscriber:
@@ -14,26 +15,103 @@ class GPUWhisperTranscriber:
         self.model_size = model_size
         self.optimize_for_radio = optimize_for_radio
 
-        # Determine device
+        # Determine device with better error handling
         if device == "auto":
-            if torch.cuda.is_available() and ENABLE_GPU:
-                self.device = "cuda"
-                print(f"🚀 Using GPU: {torch.cuda.get_device_name(0)}")
-            else:
-                self.device = "cpu"
-                print("⚠️  Using CPU (GPU not available or disabled)")
+            self.setup_device()
         else:
             self.device = device
 
-        # Load model
-        print(f"📦 Loading Whisper model: {model_size} on {self.device}")
-        self.model = whisper.load_model(model_size, device=self.device)
+        # Load model with appropriate optimizations
+        self.load_model()
 
         # Optimize for radio if requested
         if optimize_for_radio:
             self.setup_radio_optimization()
 
-        print(f"✅ Model loaded successfully")
+    def setup_device(self):
+        """Setup device with detailed diagnostics"""
+        if ENABLE_GPU and torch.cuda.is_available():
+            try:
+                # Try to initialize CUDA explicitly
+                torch.cuda.init()
+                self.device = "cuda"
+
+                # Print detailed GPU information
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+                print(f"🚀 Using GPU: {gpu_name} with {gpu_memory:.2f} GB memory")
+
+                # Check CUDA version compatibility
+                cuda_version = torch.version.cuda
+                print(f"🔧 CUDA Version: {cuda_version}")
+
+                # Check available memory
+                memory_allocated = torch.cuda.memory_allocated(0) / 1e9
+                memory_reserved = torch.cuda.memory_reserved(0) / 1e9
+                print(f"💾 GPU Memory: {memory_allocated:.2f} GB allocated, {memory_reserved:.2f} GB reserved")
+
+            except Exception as e:
+                print(f"⚠️ GPU initialization error: {e}")
+                print("⚠️ Falling back to CPU")
+                self.device = "cpu"
+        else:
+            self.device = "cpu"
+            reason = "disabled in config" if not ENABLE_GPU else "not available"
+            print(f"⚠️ Using CPU (GPU {reason})")
+
+    def load_model(self):
+        """Load Whisper model with appropriate optimizations"""
+        print(f"📦 Loading Whisper model: {self.model_size} on {self.device}")
+
+        try:
+            # Clear CUDA cache before loading model
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+                gc.collect()
+
+            if USE_FASTER_WHISPER and self.device == "cuda":
+                # Use faster-whisper if available (better GPU performance)
+                try:
+                    from faster_whisper import WhisperModel
+
+                    # Map compute type based on config
+                    compute_type = WHISPER_COMPUTE_TYPE
+
+                    print(f"🚀 Using faster-whisper with compute type: {compute_type}")
+                    self.model = WhisperModel(
+                        self.model_size,
+                        device=self.device,
+                        compute_type=compute_type
+                    )
+                    self.using_faster_whisper = True
+                    print(f"✅ faster-whisper model loaded successfully")
+                    return
+                except ImportError:
+                    print("⚠️ faster-whisper not installed, falling back to standard whisper")
+                except Exception as e:
+                    print(f"⚠️ Error loading faster-whisper model: {e}")
+                    print("⚠️ Falling back to standard whisper")
+
+            # Standard whisper with GPU optimizations
+            if self.device == "cuda":
+                # Load model directly to GPU with optimized settings
+                self.model = whisper.load_model(self.model_size)
+                self.model = self.model.to(self.device)
+
+                # Enable mixed precision for better performance
+                if hasattr(torch.cuda, 'amp') and WHISPER_COMPUTE_TYPE == "float16":
+                    print("🚀 Enabling mixed precision for faster inference")
+                    self.model = self.model.half()  # Convert to half precision
+            else:
+                # CPU model loading
+                self.model = whisper.load_model(self.model_size, device=self.device)
+
+            self.using_faster_whisper = False
+            print(f"✅ Standard whisper model loaded successfully")
+
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            raise
 
     def setup_radio_optimization(self):
         """Setup optimizations for radio communications"""
@@ -141,10 +219,35 @@ class GPUWhisperTranscriber:
             # Transcribe with GPU
             print(f"🎙️  Transcribing {os.path.basename(audio_file)} on {self.device}...")
 
-            result = self.model.transcribe(
-                audio,
-                **default_options
-            )
+            # Clear GPU cache before inference if using CUDA
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+
+            # Handle transcription based on library type
+            if hasattr(self, 'using_faster_whisper') and self.using_faster_whisper:
+                # faster-whisper has a different API
+                segments, info = self.model.transcribe(
+                    audio,
+                    language=default_options["language"],
+                    temperature=default_options["temperature"],
+                    word_timestamps=default_options["word_timestamps"],
+                    initial_prompt=default_options["initial_prompt"],
+                )
+
+                # Convert to standard whisper format
+                result = {
+                    "text": " ".join([segment.text for segment in segments]),
+                    "segments": [{"text": segment.text, "start": segment.start, "end": segment.end}
+                                 for segment in segments],
+                    "language": info.language
+                }
+            else:
+                # Standard whisper
+                with torch.amp.autocast('cuda', enabled=self.device == "cuda" and WHISPER_COMPUTE_TYPE == "float16"):
+                    result = self.model.transcribe(
+                        audio,
+                        **default_options
+                    )
 
             # Post-process result
             if result and result.get('text'):
@@ -169,6 +272,8 @@ class GPUWhisperTranscriber:
 
         except Exception as e:
             print(f"❌ Transcription error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def post_process_text(self, text):
