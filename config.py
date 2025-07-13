@@ -3,6 +3,17 @@ MODEL_SIZE = "medium"  # Options: tiny, base, small, medium, large
 PROCESSED_DIR = "audio/processed/"
 TRANSCRIPT_DIR = "transcripts/"
 ANALYSIS_DIR = "analysis/"
+ENABLE_GPU = True
+
+# Performance tuning
+USE_FASTER_WHISPER = True  # Use faster-whisper library
+WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU
+BATCH_SIZE = 1  # For batch processing
+
+# Audio preprocessing
+OPTIMIZE_FOR_RADIO = True
+APPLY_NOISE_REDUCTION = True
+RADIO_FREQUENCY_BOOST = True
 
 # Audio settings
 SAMPLE_RATE = 16000  # Good for speech recognition
