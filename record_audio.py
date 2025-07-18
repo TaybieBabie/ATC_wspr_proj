@@ -9,6 +9,9 @@ import numpy as np
 import requests
 import subprocess
 import tempfile
+
+from console_logger import info, success, warning, error
+
 from config import SAMPLE_RATE, CHANNELS, AUDIO_DIR
 
 
@@ -91,7 +94,7 @@ class LiveATCRecorder:
 
     def record_with_vad(self, frequency=None, max_duration=3600):
         """Record audio with voice activity detection"""
-        print(f"Starting stream capture from: {self.stream_url}")
+        info(f"Starting stream capture from: {self.stream_url}")
         print(r"""
         ⡱⢎⡱⢚⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢿⣿⣿⣿⡿⠟⠛⠉⠉⠁⠀⠀⠀⠀⠉⠉⠛⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
         ⢧⢋⡼⢩⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢿⣿⣿⣿⣿⣟⣡⣴⣶⣶⣾⣶⣷⣶⣶⣶⣦⣤⣄⡀⠀⠈⠙⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
@@ -136,6 +139,7 @@ class LiveATCRecorder:
 
         stream = self.capture_stream_audio()
         if not stream:
+            error("Failed to capture audio stream")
             return
 
         chunk_size = 1024 * 2  # 2 bytes per sample (16-bit)
@@ -148,7 +152,7 @@ class LiveATCRecorder:
         total_chunks = 0
         max_chunks = max_duration * chunks_per_second
 
-        print("Listening for transmissions...")
+        info("Listening for transmissions...", emoji="👂")
 
         try:
             while total_chunks < max_chunks:
@@ -164,7 +168,7 @@ class LiveATCRecorder:
 
                 if has_voice:
                     if not recording_transmission:
-                        print("🎙️  Transmission detected - recording...")
+                        info("Transmission detected - recording...", emoji="🎙️")
                         recording_transmission = True
                         current_transmission = []
 
@@ -178,19 +182,20 @@ class LiveATCRecorder:
 
                     # If silence exceeds threshold, end recording
                     if silence_count >= silence_chunks_threshold:
-                        print("📁 Transmission ended - saving...")
-                        self.save_audio_segment(current_transmission, frequency)
+                        info("Transmission ended - saving...", emoji="📁")
+                        filename = self.save_audio_segment(current_transmission, frequency)
+                        success(f"Saved transmission: {filename}", emoji="💾")
                         recording_transmission = False
                         current_transmission = []
                         silence_count = 0
-                        print("👂 Listening for transmissions...")
+                        info("Listening for transmissions...", emoji="👂")
 
-                # Optional: Print status every 30 seconds
+                        # Optional: Print status every 30 seconds
                 if total_chunks % (30 * chunks_per_second) == 0:
-                    print(f"⏱️  Monitoring... ({total_chunks // chunks_per_second}s elapsed)")
+                    info(f"Monitoring... ({total_chunks // chunks_per_second}s elapsed)", emoji="⏱️")
 
         except KeyboardInterrupt:
-            print("\n🛑 Recording stopped by user")
+            warning("Recording stopped by user", emoji="🛑")
 
         finally:
             # Save any remaining transmission

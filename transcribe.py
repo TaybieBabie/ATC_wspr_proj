@@ -10,6 +10,8 @@ import gc
 import psutil  # For CPU monitoring
 from tqdm import tqdm  # For progress bars
 
+from console_logger import info, success, error, ProgressBar
+
 from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
 from gpu_utils import setup_gpu_backend, get_device_string, get_torch_device, get_compute_type, print_gpu_info, \
@@ -308,96 +310,51 @@ class GPUWhisperTranscriber:
                 monitor_thread.join()
                 raise e
 
-    def transcribe_audio(self, audio_file, options=None):
-        """Transcribe audio with GPU acceleration and radio optimizations"""
-        start_time = datetime.now()
+    def transcribe_audio(audio_file, save_transcript=True, show_progress=True):
+        """Main transcription function"""
+        transcriber = get_transcriber()
 
-        # Default options optimized for radio
-        default_options = {
-            "language": "en",
-            "task": "transcribe",
-            "temperature": 0.0,
-            "compression_ratio_threshold": 2.4,
-            "logprob_threshold": -1.0,
-            "no_speech_threshold": 0.3,
-            "condition_on_previous_text": False,
-            "initial_prompt": "Aviation radio communication with callsigns, altitudes, and flight instructions.",
-            "word_timestamps": True,
-        }
-
-        if options:
-            default_options.update(options)
+        info(f"Starting transcription of {os.path.basename(audio_file)}", emoji="🎙️")
 
         try:
-            # Preprocess audio
-            audio = self.preprocess_audio(audio_file)
-            if audio is None:
-                return None
+            if show_progress:
+                with ProgressBar(total=100, desc=f"Transcribing {os.path.basename(audio_file)}") as pbar:
+                    # Initial progress
+                    pbar.update(10)
 
-            # Ensure audio is float32 and contiguous
-            if audio.dtype != np.float32:
-                audio = audio.astype(np.float32)
-            audio = np.ascontiguousarray(audio)
+                    # Preprocess audio
+                    audio = transcriber.preprocess_audio(audio_file)
+                    pbar.update(10)
 
-            # Clear GPU cache before inference
-            if self.backend == 'cuda':
-                torch.cuda.empty_cache()
-
-            # Handle transcription based on library type
-            if hasattr(self, 'using_faster_whisper') and self.using_faster_whisper:
-                # faster-whisper API
-                segments, info = self.model.transcribe(
-                    audio,
-                    language=default_options["language"],
-                    temperature=default_options["temperature"],
-                    word_timestamps=default_options["word_timestamps"],
-                    initial_prompt=default_options["initial_prompt"],
-                )
-
-                # Convert to standard whisper format
-                result = {
-                    "text": " ".join([segment.text for segment in segments]),
-                    "segments": [{"text": segment.text, "start": segment.start, "end": segment.end}
-                                 for segment in segments],
-                    "language": info.language
-                }
+                    # Transcribe
+                    result = transcriber.transcribe_audio(audio_file, show_progress=False)
+                    pbar.update(80)
             else:
-                # Standard whisper
-                if self.backend == 'cuda' and WHISPER_COMPUTE_TYPE == "float16":
-                    with torch.amp.autocast('cuda', enabled=True):
-                        result = self.model.transcribe(audio, **default_options)
-                else:
-                    result = self.model.transcribe(audio, **default_options)
+                result = transcriber.transcribe_audio(audio_file)
 
-            # Post-process result
-            if result and result.get('text'):
-                result['text'] = self.post_process_text(result['text'])
+            if result and save_transcript:
+                # Save transcript
+                if not os.path.exists(TRANSCRIPT_DIR):
+                    os.makedirs(TRANSCRIPT_DIR)
 
-                # Add metadata
-                result['metadata'] = {
-                    'model': self.model_size,
-                    'device': self.device_string,
-                    'backend': self.backend,
-                    'whisper_type': 'faster-whisper' if hasattr(self,
-                                                                'using_faster_whisper') and self.using_faster_whisper else 'standard-whisper',
-                    'processing_time': (datetime.now() - start_time).total_seconds(),
-                    'audio_file': audio_file,
-                    'timestamp': datetime.now().isoformat()
-                }
+                base_name = os.path.basename(audio_file).replace('.wav', '')
+                transcript_file = os.path.join(TRANSCRIPT_DIR, f"{base_name}_transcript.json")
+
+                with open(transcript_file, 'w') as f:
+                    json.dump(result, f, indent=2)
 
                 processing_time = result['metadata']['processing_time']
                 whisper_type = result['metadata']['whisper_type']
-                print(f"✅ Transcription complete in {processing_time:.2f}s using {whisper_type} on {self.backend}")
 
-                return result
-            else:
-                print("❌ No speech detected")
-                return None
+                success(
+                    f"Transcription complete in {processing_time:.2f}s using {whisper_type} on {transcriber.backend}",
+                    emoji="⏱️")
+                info(f"Transcript saved: {transcript_file}", emoji="📄")
+
+            return result
 
         except Exception as e:
-            print(f"❌ Transcription error: {e}")
-            import traceback
-            traceback.print_exc()
+            error(f"Transcription failed: {str(e)}")
             return None
 
     def post_process_text(self, text):

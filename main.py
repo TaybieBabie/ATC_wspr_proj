@@ -12,6 +12,7 @@ from config import (ATC_FREQUENCY, LIVEATC_STREAM_URL, VAD_THRESHOLD,
                     SILENCE_DURATION, AUDIO_DIR, OPENSKY_USERNAME, OPENSKY_PASSWORD)
 from adsb_tracker import ADSBTracker, OpenSkySource, LocalADSBSource
 from correlator import ATCCorrelator
+from console_logger import info, success, warning, error, section, ProgressBar
 
 class ATCMonitor:
     """Main monitoring system that coordinates recording, transcription, and analysis"""
@@ -179,8 +180,8 @@ class ATCMonitor:
 
                 # Show queue progress
                 queue_size = self.audio_queue.qsize()
-                print(
-                    f"\n🔄 Processing: {os.path.basename(audio_file)} [{processed_count}/{processed_count + queue_size}]")
+                info(f"Processing: {os.path.basename(audio_file)} [{processed_count}/{processed_count + queue_size}]",
+                     emoji="🔄")
 
                 # Transcribe with progress bar
                 try:
@@ -188,7 +189,7 @@ class ATCMonitor:
                     self.stats['transmissions_transcribed'] += 1
 
                     if result and result.get('text', '').strip():
-                        print(f"📝 Transcript: {result['text']}")
+                        info(f"Transcript: {result['text']}", emoji="📝")
 
                         # Save transcript
                         transcript_file = self.save_transcript(audio_file, result)
@@ -199,17 +200,15 @@ class ATCMonitor:
                         # Process analysis results
                         self.process_analysis(analysis, result['text'])
                     else:
-                        print("❌ No speech detected in transmission")
-                        # Optionally delete empty recordings
-                        # os.remove(audio_file)
+                        warning("No speech detected in transmission")
 
                 except Exception as e:
-                    print(f"❌ Error processing {audio_file}: {e}")
+                    error(f"Error processing {audio_file}: {e}")
 
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"❌ Worker thread error: {e}")
+                error(f"Worker thread error: {e}")
 
     def save_transcript(self, audio_file, transcript_result):
         """Save transcript to JSON file"""
@@ -331,17 +330,14 @@ class ATCMonitor:
         if self.stats['start_time']:
             duration = datetime.now() - self.stats['start_time']
 
-            print("\n" + "=" * 60)
-            print("📊 MONITORING SESSION STATISTICS")
-            print("=" * 60)
-            print(f"Duration: {duration}")
-            print(f"Transmissions recorded: {self.stats['transmissions_recorded']}")
-            print(f"Transmissions transcribed: {self.stats['transmissions_transcribed']}")
-            print(f"Non-transponder alerts: {self.stats['non_transponder_alerts']}")
-            print(f"Unique callsigns detected: {len(self.stats['callsigns_detected'])}")
+            section("MONITORING SESSION STATISTICS", emoji="📊")
+            info(f"Duration: {duration}")
+            info(f"Transmissions recorded: {self.stats['transmissions_recorded']}")
+            info(f"Transmissions transcribed: {self.stats['transmissions_transcribed']}")
+            info(f"Non-transponder alerts: {self.stats['non_transponder_alerts']}")
+            info(f"Unique callsigns detected: {len(self.stats['callsigns_detected'])}")
             if self.stats['callsigns_detected']:
-                print(f"Callsigns: {', '.join(sorted(self.stats['callsigns_detected']))}")
-            print("=" * 60)
+                info(f"Callsigns: {', '.join(sorted(self.stats['callsigns_detected']))}")
 
 
 # Enhanced recorder classes with callbacks
