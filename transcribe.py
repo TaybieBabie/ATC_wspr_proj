@@ -6,6 +6,8 @@ import json
 import os
 import librosa
 import gc
+import psutil  # For CPU monitoring
+from tqdm import tqdm  # For progress bars
 
 from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER
 
@@ -86,11 +88,17 @@ class GPUWhisperTranscriber:
                         compute_type = "int8"  # CPU works better with int8
 
                     print(f"🚀 Using faster-whisper with compute type: {compute_type}")
-                    self.model = WhisperModel(
-                        self.model_size,
-                        device=self.device,
-                        compute_type=compute_type
-                    )
+
+                    # Show progress bar for model loading
+                    with tqdm(total=1, desc="Loading model", unit="model",
+                              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+                        self.model = WhisperModel(
+                            self.model_size,
+                            device=self.device,
+                            compute_type=compute_type
+                        )
+                        pbar.update(1)
+
                     self.using_faster_whisper = True
                     print(f"✅ faster-whisper model loaded successfully")
                     return
@@ -101,18 +109,21 @@ class GPUWhisperTranscriber:
                     print("⚠️ Falling back to standard whisper")
 
             # Standard whisper fallback (for AMD GPU when implemented, or if faster-whisper fails)
-            if self.device == "cuda":
-                # Load model directly to GPU with optimized settings
-                self.model = whisper.load_model(self.model_size)
-                self.model = self.model.to(self.device)
+            with tqdm(total=1, desc="Loading model", unit="model",
+                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+                if self.device == "cuda":
+                    # Load model directly to GPU with optimized settings
+                    self.model = whisper.load_model(self.model_size)
+                    self.model = self.model.to(self.device)
 
-                # Enable mixed precision for better performance
-                if hasattr(torch.cuda, 'amp') and WHISPER_COMPUTE_TYPE == "float16":
-                    print("🚀 Enabling mixed precision for faster inference")
-                    self.model = self.model.half()  # Convert to half precision
-            else:
-                # CPU model loading
-                self.model = whisper.load_model(self.model_size, device=self.device)
+                    # Enable mixed precision for better performance
+                    if hasattr(torch.cuda, 'amp') and WHISPER_COMPUTE_TYPE == "float16":
+                        print("🚀 Enabling mixed precision for faster inference")
+                        self.model = self.model.half()  # Convert to half precision
+                else:
+                    # CPU model loading
+                    self.model = whisper.load_model(self.model_size, device=self.device)
+                pbar.update(1)
 
             self.using_faster_whisper = False
             print(f"✅ Standard whisper model loaded successfully")
@@ -201,6 +212,42 @@ class GPUWhisperTranscriber:
             # If scipy not available, return original
             return audio
 
+    def transcribe_audio_with_progress(self, audio_file, options=None):
+        """Wrapper for transcribe_audio with progress monitoring"""
+        # Create a custom progress bar that shows CPU usage
+        with tqdm(total=100, desc=f"Transcribing {os.path.basename(audio_file)}",
+                  bar_format="{l_bar}{bar}| CPU: {postfix[0]:.1f}% | {elapsed}<{remaining}",
+                  postfix=[0.0]) as pbar:
+
+            # Start CPU monitoring in a separate thread
+            import threading
+            stop_monitoring = threading.Event()
+
+            def monitor_cpu():
+                while not stop_monitoring.is_set():
+                    cpu_percent = psutil.cpu_percent(interval=0.1)
+                    pbar.postfix[0] = cpu_percent
+                    pbar.refresh()
+
+            monitor_thread = threading.Thread(target=monitor_cpu)
+            monitor_thread.start()
+
+            try:
+                # Simulate progress steps
+                pbar.update(20)  # Loading audio
+                result = self.transcribe_audio(audio_file, options)
+                pbar.update(80)  # Transcription complete
+
+                # Stop monitoring
+                stop_monitoring.set()
+                monitor_thread.join()
+
+                return result
+            except Exception as e:
+                stop_monitoring.set()
+                monitor_thread.join()
+                raise e
+
     def transcribe_audio(self, audio_file, options=None):
         """Transcribe audio with GPU acceleration and radio optimizations"""
         start_time = datetime.now()
@@ -231,9 +278,6 @@ class GPUWhisperTranscriber:
             if audio.dtype != np.float32:
                 audio = audio.astype(np.float32)
             audio = np.ascontiguousarray(audio)
-
-            # Transcribe with GPU
-            print(f"🎙️  Transcribing {os.path.basename(audio_file)} on {self.device}...")
 
             # Clear GPU cache before inference if using CUDA
             if self.device == "cuda":
@@ -290,11 +334,9 @@ class GPUWhisperTranscriber:
 
                 processing_time = result['metadata']['processing_time']
                 whisper_type = result['metadata']['whisper_type']
-                print(f"✅ Transcription complete in {processing_time:.2f}s using {whisper_type}")
 
                 return result
             else:
-                print("❌ No speech detected")
                 return None
 
         except Exception as e:
@@ -343,15 +385,19 @@ class GPUWhisperTranscriber:
         return text
 
     def batch_transcribe(self, audio_files, callback=None):
-        """Batch transcribe multiple files efficiently"""
+        """Batch transcribe multiple files efficiently with progress bar"""
         results = []
 
-        for i, audio_file in enumerate(audio_files):
-            result = self.transcribe_audio(audio_file)
-            results.append(result)
+        # Create overall progress bar
+        with tqdm(total=len(audio_files), desc="Batch transcription", unit="files") as pbar:
+            for i, audio_file in enumerate(audio_files):
+                result = self.transcribe_audio_with_progress(audio_file)
+                results.append(result)
 
-            if callback:
-                callback(i + 1, len(audio_files), result)
+                pbar.update(1)
+
+                if callback:
+                    callback(i + 1, len(audio_files), result)
 
         return results
 
@@ -371,10 +417,14 @@ def get_transcriber():
     return _transcriber
 
 
-def transcribe_audio(audio_file, save_transcript=True):
+def transcribe_audio(audio_file, save_transcript=True, show_progress=True):
     """Main transcription function"""
     transcriber = get_transcriber()
-    result = transcriber.transcribe_audio(audio_file)
+
+    if show_progress:
+        result = transcriber.transcribe_audio_with_progress(audio_file)
+    else:
+        result = transcriber.transcribe_audio(audio_file)
 
     if result and save_transcript:
         # Save transcript

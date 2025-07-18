@@ -145,16 +145,24 @@ class ATCMonitor:
 
     def transcription_worker(self):
         """Worker thread for processing audio files"""
+        # Track queue size for progress
+        initial_queue_size = self.audio_queue.qsize()
+        processed_count = 0
+
         while self.is_monitoring or not self.audio_queue.empty():
             try:
                 # Wait for audio files with timeout
                 audio_file = self.audio_queue.get(timeout=1)
+                processed_count += 1
 
-                print(f"\n🔄 Processing: {os.path.basename(audio_file)}")
+                # Show queue progress
+                queue_size = self.audio_queue.qsize()
+                print(
+                    f"\n🔄 Processing: {os.path.basename(audio_file)} [{processed_count}/{processed_count + queue_size}]")
 
-                # Transcribe
+                # Transcribe with progress bar
                 try:
-                    result = transcribe_audio(audio_file)
+                    result = transcribe_audio(audio_file, show_progress=True)
                     self.stats['transmissions_transcribed'] += 1
 
                     if result and result.get('text', '').strip():
