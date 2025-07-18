@@ -69,13 +69,21 @@ class GPUWhisperTranscriber:
                 torch.cuda.empty_cache()
                 gc.collect()
 
-            if USE_FASTER_WHISPER and self.device == "cuda":
-                # Use faster-whisper if available (better GPU performance)
+            # NEW PRIORITY ORDER:
+            # 1. Use faster-whisper for NVIDIA GPU (cuda) and CPU
+            # 2. Use normal whisper only for AMD GPU (future implementation)
+            # 3. Since AMD detection is not implemented, faster-whisper will be used for both NVIDIA and CPU
+
+            if USE_FASTER_WHISPER and self.device in ["cuda", "cpu"]:
+                # Use faster-whisper for NVIDIA GPU and CPU
                 try:
                     from faster_whisper import WhisperModel
 
-                    # Map compute type based on config
-                    compute_type = WHISPER_COMPUTE_TYPE
+                    # Map compute type based on device and config
+                    if self.device == "cuda":
+                        compute_type = WHISPER_COMPUTE_TYPE
+                    else:  # CPU
+                        compute_type = "int8"  # CPU works better with int8
 
                     print(f"🚀 Using faster-whisper with compute type: {compute_type}")
                     self.model = WhisperModel(
@@ -92,7 +100,7 @@ class GPUWhisperTranscriber:
                     print(f"⚠️ Error loading faster-whisper model: {e}")
                     print("⚠️ Falling back to standard whisper")
 
-            # Standard whisper with GPU optimizations
+            # Standard whisper fallback (for AMD GPU when implemented, or if faster-whisper fails)
             if self.device == "cuda":
                 # Load model directly to GPU with optimized settings
                 self.model = whisper.load_model(self.model_size)
@@ -155,6 +163,9 @@ class GPUWhisperTranscriber:
                 # This mimics radio frequency response
                 audio = self.radio_filter(audio, sr)
 
+            # FIX: Ensure audio array is contiguous to avoid negative stride error
+            audio = np.ascontiguousarray(audio)
+
             return audio
 
         except Exception as e:
@@ -216,6 +227,11 @@ class GPUWhisperTranscriber:
             if audio is None:
                 return None
 
+            # Additional fix: Ensure audio is float32 and contiguous
+            if audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+            audio = np.ascontiguousarray(audio)
+
             # Transcribe with GPU
             print(f"🎙️  Transcribing {os.path.basename(audio_file)} on {self.device}...")
 
@@ -243,11 +259,19 @@ class GPUWhisperTranscriber:
                 }
             else:
                 # Standard whisper
-                with torch.amp.autocast('cuda', enabled=self.device == "cuda" and WHISPER_COMPUTE_TYPE == "float16"):
+                # Disable autocast for CPU to avoid issues
+                if self.device == "cpu":
                     result = self.model.transcribe(
                         audio,
                         **default_options
                     )
+                else:
+                    with torch.amp.autocast('cuda',
+                                            enabled=self.device == "cuda" and WHISPER_COMPUTE_TYPE == "float16"):
+                        result = self.model.transcribe(
+                            audio,
+                            **default_options
+                        )
 
             # Post-process result
             if result and result.get('text'):
@@ -257,13 +281,16 @@ class GPUWhisperTranscriber:
                 result['metadata'] = {
                     'model': self.model_size,
                     'device': self.device,
+                    'whisper_type': 'faster-whisper' if hasattr(self,
+                                                                'using_faster_whisper') and self.using_faster_whisper else 'standard-whisper',
                     'processing_time': (datetime.now() - start_time).total_seconds(),
                     'audio_file': audio_file,
                     'timestamp': datetime.now().isoformat()
                 }
 
                 processing_time = result['metadata']['processing_time']
-                print(f"✅ Transcription complete in {processing_time:.2f}s")
+                whisper_type = result['metadata']['whisper_type']
+                print(f"✅ Transcription complete in {processing_time:.2f}s using {whisper_type}")
 
                 return result
             else:
@@ -374,3 +401,4 @@ if __name__ == "__main__":
         if result:
             print(f"\nTranscript: {result['text']}")
             print(f"Processing time: {result['metadata']['processing_time']:.2f}s")
+            print(f"Whisper type: {result['metadata']['whisper_type']}")
