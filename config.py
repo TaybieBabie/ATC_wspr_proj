@@ -1,13 +1,19 @@
 # Configuration settings
-MODEL_SIZE = "medium"  # Options: tiny, base, small, medium, large
+MODEL_SIZE = "large"  # Options: tiny, base, small, medium, large
 PROCESSED_DIR = "audio/processed/"
 TRANSCRIPT_DIR = "transcripts/"
 ANALYSIS_DIR = "analysis/"
 ENABLE_GPU = True
 
+# GPU Configuration
+GPU_BACKEND = "auto"  # Options: "auto", "cuda", "directml", "cpu"
+PREFER_AMD_GPU = False  # Set to True to prefer AMD over NVIDIA when both available
+DIRECTML_ENABLED = True  # Enable DirectML support for AMD GPUs
+PREFER_ONNX_DIRECTML = True  # Prefer ONNX Runtime DirectML over PyTorch DirectML
+
 # Performance tuning
 USE_FASTER_WHISPER = True  # Use faster-whisper library
-WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU
+WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU/DirectML
 BATCH_SIZE = 1  # For batch processing
 
 # Audio preprocessing

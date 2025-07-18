@@ -55,24 +55,45 @@ class ATCMonitor:
             self.adsb_thread.start()
 
     def test_gpu_setup(self):
-        import torch
-        print(f"PyTorch version: {torch.__version__}")
-        print(f"CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"CUDA version: {torch.version.cuda}")
-            print(f"GPU count: {torch.cuda.device_count()}")
-            print(f"Current GPU: {torch.cuda.current_device()}")
-            print(f"GPU name: {torch.cuda.get_device_name(0)}")
-            print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
+        from gpu_utils import setup_gpu_backend, print_gpu_info, test_gpu_functionality
 
-        # Test faster-whisper GPU
+        print("🧪 Testing GPU setup...")
+        success = test_gpu_functionality()
+
+        if success:
+            print("✅ GPU acceleration test completed successfully")
+        else:
+            print("⚠️ GPU acceleration test completed with issues")
+
+        # Test faster-whisper with detected backend
+        backend, capabilities = setup_gpu_backend()
+
+        if backend == 'cuda':
+            try:
+                from faster_whisper import WhisperModel
+                model = WhisperModel("tiny", device="cuda", compute_type="float16")
+                print("✅ faster-whisper CUDA test successful")
+                del model
+            except Exception as e:
+                print(f"❌ faster-whisper CUDA test failed: {e}")
+
+        elif backend == 'directml':
+            try:
+                from faster_whisper import WhisperModel
+                model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                print("✅ faster-whisper DirectML test successful")
+                del model
+            except Exception as e:
+                print(f"❌ faster-whisper DirectML test failed: {e}")
+
+        # Test standard whisper
         try:
-            from faster_whisper import WhisperModel
-            model = WhisperModel("tiny", device="cuda", compute_type="float16")
-            print("✅ faster-whisper GPU test successful")
+            import whisper
+            model = whisper.load_model("tiny", device='cpu')
+            print("✅ Standard whisper test successful")
             del model
         except Exception as e:
-            print(f"❌ faster-whisper GPU test failed: {e}")
+            print(f"❌ Standard whisper test failed: {e}")
 
     def adsb_update_worker(self):
         """Background thread to update ADS-B data"""

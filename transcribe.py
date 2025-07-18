@@ -9,7 +9,10 @@ import gc
 import psutil  # For CPU monitoring
 from tqdm import tqdm  # For progress bars
 
-from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER
+from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
+    PREFER_ONNX_DIRECTML
+from gpu_utils import setup_gpu_backend, get_device_string, get_torch_device, get_compute_type, print_gpu_info, \
+    get_directml_provider_options
 
 
 class GPUWhisperTranscriber:
@@ -17,11 +20,16 @@ class GPUWhisperTranscriber:
         self.model_size = model_size
         self.optimize_for_radio = optimize_for_radio
 
-        # Determine device with better error handling
+        # Setup GPU backend
         if device == "auto":
-            self.setup_device()
+            self.backend, self.capabilities = setup_gpu_backend()
+            self.device_string = get_device_string(self.backend)
+            self.device = get_torch_device(self.backend) if self.backend != 'directml' else None
         else:
-            self.device = device
+            self.device_string = device
+            self.device = torch.device(device) if device != 'directml' else None
+            self.backend = self._determine_backend_from_device(device)
+            self.capabilities = None
 
         # Load model with appropriate optimizations
         self.load_model()
@@ -30,116 +38,165 @@ class GPUWhisperTranscriber:
         if optimize_for_radio:
             self.setup_radio_optimization()
 
-    def setup_device(self):
-        """Setup device with detailed diagnostics"""
-        if ENABLE_GPU and torch.cuda.is_available():
-            try:
-                # Try to initialize CUDA explicitly
-                torch.cuda.init()
-                self.device = "cuda"
-
-                # Print detailed GPU information
-                gpu_name = torch.cuda.get_device_name(0)
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-                print(f"🚀 Using GPU: {gpu_name} with {gpu_memory:.2f} GB memory")
-
-                # Check CUDA version compatibility
-                cuda_version = torch.version.cuda
-                print(f"🔧 CUDA Version: {cuda_version}")
-
-                # Check available memory
-                memory_allocated = torch.cuda.memory_allocated(0) / 1e9
-                memory_reserved = torch.cuda.memory_reserved(0) / 1e9
-                print(f"💾 GPU Memory: {memory_allocated:.2f} GB allocated, {memory_reserved:.2f} GB reserved")
-
-            except Exception as e:
-                print(f"⚠️ GPU initialization error: {e}")
-                print("⚠️ Falling back to CPU")
-                self.device = "cpu"
+    def _determine_backend_from_device(self, device):
+        """Determine backend from device string"""
+        if 'cuda' in device:
+            return 'cuda'
+        elif 'directml' in device:
+            return 'directml'
         else:
-            self.device = "cpu"
-            reason = "disabled in config" if not ENABLE_GPU else "not available"
-            print(f"⚠️ Using CPU (GPU {reason})")
+            return 'cpu'
 
     def load_model(self):
         """Load Whisper model with appropriate optimizations"""
-        print(f"📦 Loading Whisper model: {self.model_size} on {self.device}")
+        print(f"📦 Loading Whisper model: {self.model_size} on {self.device_string}")
+
+        # Print GPU information
+        if self.capabilities:
+            print_gpu_info(self.backend, self.capabilities)
 
         try:
             # Clear CUDA cache before loading model
-            if self.device == "cuda":
+            if self.backend == 'cuda':
                 torch.cuda.empty_cache()
                 gc.collect()
 
-            # NEW PRIORITY ORDER:
-            # 1. Use faster-whisper for NVIDIA GPU (cuda) and CPU
-            # 2. Use normal whisper only for AMD GPU (future implementation)
-            # 3. Since AMD detection is not implemented, faster-whisper will be used for both NVIDIA and CPU
+            # UPDATED PRIORITY ORDER:
+            # 1. Use faster-whisper for NVIDIA GPU (cuda)
+            # 2. Use faster-whisper with DirectML for AMD GPU
+            # 3. Use faster-whisper for CPU
+            # 4. Use normal whisper as fallback
 
-            if USE_FASTER_WHISPER and self.device in ["cuda", "cpu"]:
-                # Use faster-whisper for NVIDIA GPU and CPU
-                try:
-                    from faster_whisper import WhisperModel
-
-                    # Map compute type based on device and config
-                    if self.device == "cuda":
-                        compute_type = WHISPER_COMPUTE_TYPE
-                    else:  # CPU
-                        compute_type = "int8"  # CPU works better with int8
-
-                    print(f"🚀 Using faster-whisper with compute type: {compute_type}")
-
-                    # Show progress bar for model loading
-                    with tqdm(total=1, desc="Loading model", unit="model",
-                              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                        self.model = WhisperModel(
-                            self.model_size,
-                            device=self.device,
-                            compute_type=compute_type
-                        )
-                        pbar.update(1)
-
-                    self.using_faster_whisper = True
-                    print(f"✅ faster-whisper model loaded successfully")
+            if USE_FASTER_WHISPER:
+                success = self._load_faster_whisper()
+                if success:
                     return
-                except ImportError:
-                    print("⚠️ faster-whisper not installed, falling back to standard whisper")
-                except Exception as e:
-                    print(f"⚠️ Error loading faster-whisper model: {e}")
-                    print("⚠️ Falling back to standard whisper")
 
-            # Standard whisper fallback (for AMD GPU when implemented, or if faster-whisper fails)
-            with tqdm(total=1, desc="Loading model", unit="model",
-                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
-                if self.device == "cuda":
-                    # Load model directly to GPU with optimized settings
-                    self.model = whisper.load_model(self.model_size)
-                    self.model = self.model.to(self.device)
-
-                    # Enable mixed precision for better performance
-                    if hasattr(torch.cuda, 'amp') and WHISPER_COMPUTE_TYPE == "float16":
-                        print("🚀 Enabling mixed precision for faster inference")
-                        self.model = self.model.half()  # Convert to half precision
-                else:
-                    # CPU model loading
-                    self.model = whisper.load_model(self.model_size, device=self.device)
-                pbar.update(1)
-
-            self.using_faster_whisper = False
-            print(f"✅ Standard whisper model loaded successfully")
+            # Standard whisper fallback
+            self._load_standard_whisper()
 
         except Exception as e:
             print(f"❌ Error loading model: {e}")
             raise
 
+    def _load_faster_whisper(self):
+        """Load faster-whisper model with backend-specific optimizations"""
+        try:
+            from faster_whisper import WhisperModel
+
+            # Show progress bar for model loading
+            with tqdm(total=1, desc="Loading faster-whisper model", unit="model",
+                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+
+                if self.backend == 'cuda':
+                    # NVIDIA GPU with CUDA
+                    compute_type = get_compute_type(self.backend)
+                    print(f"🚀 Using faster-whisper with CUDA, compute type: {compute_type}")
+
+                    self.model = WhisperModel(
+                        self.model_size,
+                        device=self.device_string,
+                        compute_type=compute_type
+                    )
+
+                elif self.backend == 'directml':
+                    # AMD GPU with DirectML
+                    print(f"🚀 Using faster-whisper with DirectML")
+
+                    if PREFER_ONNX_DIRECTML and self.capabilities.get('directml_onnx_available', False):
+                        # Try ONNX Runtime DirectML first
+                        try:
+                            print("   - Attempting ONNX Runtime DirectML...")
+                            provider_options = get_directml_provider_options()
+
+                            self.model = WhisperModel(
+                                self.model_size,
+                                device="cpu",  # Load on CPU first
+                                compute_type="int8",  # DirectML works better with int8
+                                providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+                            )
+                            print("   ✅ ONNX Runtime DirectML loaded successfully")
+
+                        except Exception as e:
+                            print(f"   ⚠️ ONNX Runtime DirectML failed: {e}")
+                            print("   - Falling back to PyTorch DirectML...")
+
+                            # Fallback to PyTorch DirectML
+                            self.model = WhisperModel(
+                                self.model_size,
+                                device="cpu",
+                                compute_type="int8"
+                            )
+                            print("   ✅ PyTorch DirectML fallback loaded")
+                    else:
+                        # Use PyTorch DirectML directly
+                        self.model = WhisperModel(
+                            self.model_size,
+                            device="cpu",
+                            compute_type="int8"
+                        )
+                        print("   ✅ PyTorch DirectML loaded")
+
+                else:
+                    # CPU
+                    compute_type = get_compute_type(self.backend)
+                    print(f"🚀 Using faster-whisper with CPU, compute type: {compute_type}")
+
+                    self.model = WhisperModel(
+                        self.model_size,
+                        device=self.device_string,
+                        compute_type=compute_type
+                    )
+
+                pbar.update(1)
+
+            self.using_faster_whisper = True
+            print(f"✅ faster-whisper model loaded successfully")
+            return True
+
+        except ImportError:
+            print("⚠️ faster-whisper not installed, falling back to standard whisper")
+            return False
+        except Exception as e:
+            print(f"⚠️ Error loading faster-whisper model: {e}")
+            print("⚠️ Falling back to standard whisper")
+            return False
+
+    def _load_standard_whisper(self):
+        """Load standard whisper model"""
+        with tqdm(total=1, desc="Loading standard whisper model", unit="model",
+                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}") as pbar:
+
+            if self.backend == 'cuda':
+                # Load model directly to GPU with optimized settings
+                self.model = whisper.load_model(self.model_size)
+                self.model = self.model.to(self.device)
+
+                # Enable mixed precision for better performance
+                if hasattr(torch.cuda, 'amp') and WHISPER_COMPUTE_TYPE == "float16":
+                    print("🚀 Enabling mixed precision for faster inference")
+                    self.model = self.model.half()  # Convert to half precision
+
+            elif self.backend == 'directml':
+                # For DirectML, load on CPU first then move to DirectML device
+                self.model = whisper.load_model(self.model_size, device='cpu')
+                if self.device:
+                    self.model = self.model.to(self.device)
+                    print("🚀 Standard whisper moved to DirectML device")
+                else:
+                    print("⚠️ DirectML device not available, using CPU")
+
+            else:
+                # CPU model loading
+                self.model = whisper.load_model(self.model_size, device=self.device)
+
+            pbar.update(1)
+
+        self.using_faster_whisper = False
+        print(f"✅ Standard whisper model loaded successfully")
+
     def setup_radio_optimization(self):
         """Setup optimizations for radio communications"""
-        # Radio communications typically have:
-        # - Limited vocabulary (aviation terms, callsigns, numbers)
-        # - Compressed audio
-        # - Background noise
-        # - Clipped transmissions
-
         # Common aviation terms to help with recognition
         self.aviation_vocab = [
             "aircraft", "runway", "approach", "departure", "tower", "ground",
@@ -159,22 +216,12 @@ class GPUWhisperTranscriber:
 
             if self.optimize_for_radio:
                 # Apply radio-specific preprocessing
-
-                # 1. Normalize audio
                 audio = librosa.util.normalize(audio)
-
-                # 2. Apply high-pass filter to remove low-frequency noise
                 audio = librosa.effects.preemphasis(audio, coef=0.97)
-
-                # 3. Reduce noise (simple spectral subtraction)
-                # This is a basic approach - you might want to use more sophisticated methods
                 audio = self.reduce_noise(audio, sr)
-
-                # 4. Boost frequencies typical of radio communications (300-3400 Hz)
-                # This mimics radio frequency response
                 audio = self.radio_filter(audio, sr)
 
-            # FIX: Ensure audio array is contiguous to avoid negative stride error
+            # Ensure audio array is contiguous to avoid negative stride error
             audio = np.ascontiguousarray(audio)
 
             return audio
@@ -186,8 +233,7 @@ class GPUWhisperTranscriber:
     def reduce_noise(self, audio, sample_rate):
         """Basic noise reduction for radio audio"""
         try:
-            # Simple noise gate - reduce very quiet parts
-            threshold = np.percentile(np.abs(audio), 20)  # 20th percentile as noise floor
+            threshold = np.percentile(np.abs(audio), 20)
             audio = np.where(np.abs(audio) < threshold, audio * 0.1, audio)
             return audio
         except:
@@ -196,20 +242,14 @@ class GPUWhisperTranscriber:
     def radio_filter(self, audio, sample_rate):
         """Apply radio-like frequency filtering"""
         try:
-            # Apply bandpass filter to mimic radio frequencies
             from scipy import signal
-
-            # Radio typical range: 300-3400 Hz
             nyquist = sample_rate * 0.5
             low = 300 / nyquist
             high = 3400 / nyquist
-
             b, a = signal.butter(4, [low, high], btype='band')
             filtered_audio = signal.filtfilt(b, a, audio)
-
             return filtered_audio
         except:
-            # If scipy not available, return original
             return audio
 
     def transcribe_audio_with_progress(self, audio_file, options=None):
@@ -256,11 +296,11 @@ class GPUWhisperTranscriber:
         default_options = {
             "language": "en",
             "task": "transcribe",
-            "temperature": 0.0,  # More deterministic
+            "temperature": 0.0,
             "compression_ratio_threshold": 2.4,
             "logprob_threshold": -1.0,
-            "no_speech_threshold": 0.3,  # Lower for radio (often quiet)
-            "condition_on_previous_text": False,  # Better for short clips
+            "no_speech_threshold": 0.3,
+            "condition_on_previous_text": False,
             "initial_prompt": "Aviation radio communication with callsigns, altitudes, and flight instructions.",
             "word_timestamps": True,
         }
@@ -274,18 +314,18 @@ class GPUWhisperTranscriber:
             if audio is None:
                 return None
 
-            # Additional fix: Ensure audio is float32 and contiguous
+            # Ensure audio is float32 and contiguous
             if audio.dtype != np.float32:
                 audio = audio.astype(np.float32)
             audio = np.ascontiguousarray(audio)
 
-            # Clear GPU cache before inference if using CUDA
-            if self.device == "cuda":
+            # Clear GPU cache before inference
+            if self.backend == 'cuda':
                 torch.cuda.empty_cache()
 
             # Handle transcription based on library type
             if hasattr(self, 'using_faster_whisper') and self.using_faster_whisper:
-                # faster-whisper has a different API
+                # faster-whisper API
                 segments, info = self.model.transcribe(
                     audio,
                     language=default_options["language"],
@@ -303,19 +343,11 @@ class GPUWhisperTranscriber:
                 }
             else:
                 # Standard whisper
-                # Disable autocast for CPU to avoid issues
-                if self.device == "cpu":
-                    result = self.model.transcribe(
-                        audio,
-                        **default_options
-                    )
+                if self.backend == 'cuda' and WHISPER_COMPUTE_TYPE == "float16":
+                    with torch.amp.autocast('cuda', enabled=True):
+                        result = self.model.transcribe(audio, **default_options)
                 else:
-                    with torch.amp.autocast('cuda',
-                                            enabled=self.device == "cuda" and WHISPER_COMPUTE_TYPE == "float16"):
-                        result = self.model.transcribe(
-                            audio,
-                            **default_options
-                        )
+                    result = self.model.transcribe(audio, **default_options)
 
             # Post-process result
             if result and result.get('text'):
@@ -324,7 +356,8 @@ class GPUWhisperTranscriber:
                 # Add metadata
                 result['metadata'] = {
                     'model': self.model_size,
-                    'device': self.device,
+                    'device': self.device_string,
+                    'backend': self.backend,
                     'whisper_type': 'faster-whisper' if hasattr(self,
                                                                 'using_faster_whisper') and self.using_faster_whisper else 'standard-whisper',
                     'processing_time': (datetime.now() - start_time).total_seconds(),
@@ -334,9 +367,11 @@ class GPUWhisperTranscriber:
 
                 processing_time = result['metadata']['processing_time']
                 whisper_type = result['metadata']['whisper_type']
+                print(f"✅ Transcription complete in {processing_time:.2f}s using {whisper_type} on {self.backend}")
 
                 return result
             else:
+                print("❌ No speech detected")
                 return None
 
         except Exception as e:
@@ -354,30 +389,20 @@ class GPUWhisperTranscriber:
         text = text.strip()
 
         # Fix common number issues
-        text = text.replace(" 0 ", " zero ")
-        text = text.replace(" 1 ", " one ")
-        text = text.replace(" 2 ", " two ")
-        text = text.replace(" 3 ", " three ")
-        text = text.replace(" 4 ", " four ")
-        text = text.replace(" 5 ", " five ")
-        text = text.replace(" 6 ", " six ")
-        text = text.replace(" 7 ", " seven ")
-        text = text.replace(" 8 ", " eight ")
-        text = text.replace(" 9 ", " nine ")
+        replacements = {
+            " 0 ": " zero ", " 1 ": " one ", " 2 ": " two ", " 3 ": " three ",
+            " 4 ": " four ", " 5 ": " five ", " 6 ": " six ", " 7 ": " seven ",
+            " 8 ": " eight ", " 9 ": " nine "
+        }
 
         # Fix common aviation terms
-        replacements = {
-            "rodger": "roger",
-            "wilko": "wilco",
-            "altitute": "altitude",
-            "cleard": "cleared",
-            "cont": "contact",
-            "freq": "frequency",
-            "twr": "tower",
-            "gnd": "ground",
-            "app": "approach",
-            "dep": "departure"
+        aviation_replacements = {
+            "rodger": "roger", "wilko": "wilco", "altitute": "altitude",
+            "cleard": "cleared", "cont": "contact", "freq": "frequency",
+            "twr": "tower", "gnd": "ground", "app": "approach", "dep": "departure"
         }
+
+        replacements.update(aviation_replacements)
 
         for wrong, correct in replacements.items():
             text = text.replace(wrong, correct)
@@ -451,4 +476,5 @@ if __name__ == "__main__":
         if result:
             print(f"\nTranscript: {result['text']}")
             print(f"Processing time: {result['metadata']['processing_time']:.2f}s")
+            print(f"Backend: {result['metadata']['backend']}")
             print(f"Whisper type: {result['metadata']['whisper_type']}")
