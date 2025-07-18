@@ -1,3 +1,4 @@
+#gpu_utils.py
 import torch
 import platform
 import subprocess
@@ -33,7 +34,8 @@ def detect_gpu_capabilities():
         'recommended_backend': 'cpu',
         'cuda_version': None,
         'amd_gpu_detected': False,
-        'nvidia_gpu_detected': False
+        'nvidia_gpu_detected': False,
+        'amd_gpus': []
     }
 
     # Check CUDA (NVIDIA)
@@ -48,6 +50,13 @@ def detect_gpu_capabilities():
 
     # Check DirectML availability
     if DIRECTML_ENABLED:
+        # Check for AMD GPUs
+        amd_gpus = get_amd_gpu_info()
+        if amd_gpus:
+            capabilities['amd_gpu_detected'] = True
+            capabilities['amd_gpus'] = amd_gpus
+            capabilities['directml_devices'] = len(amd_gpus)
+
         # Check ONNX Runtime DirectML
         if ONNX_RUNTIME_AVAILABLE:
             try:
@@ -64,14 +73,11 @@ def detect_gpu_capabilities():
             try:
                 capabilities['torch_directml_available'] = True
                 capabilities['directml_available'] = True
-                capabilities['directml_devices'] = torch_directml.device_count()
+                if not capabilities['directml_devices']:  # If not already set by AMD GPU detection
+                    capabilities['directml_devices'] = torch_directml.device_count()
                 print("✅ PyTorch DirectML available")
             except Exception as e:
                 print(f"PyTorch DirectML detection error: {e}")
-
-        # Check if AMD GPU is present
-        if capabilities['directml_available']:
-            capabilities['amd_gpu_detected'] = detect_amd_gpu()
 
     # Determine recommended backend
     if capabilities['cuda_available'] and capabilities['directml_available']:
@@ -114,6 +120,40 @@ def detect_amd_gpu():
         pass
 
     return False
+
+
+def get_amd_gpu_info():
+    """Get information about AMD GPUs in the system"""
+    gpu_info = []
+
+    if platform.system() != "Windows":
+        return gpu_info
+
+    try:
+        # Use PowerShell to get GPU info
+        cmd = 'powershell -Command "Get-WmiObject -Class Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion | ConvertTo-Json"'
+        result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+
+            # Handle both single GPU (dict) and multiple GPUs (list)
+            if isinstance(data, dict):
+                data = [data]
+
+            for i, gpu in enumerate(data):
+                if 'AMD' in gpu['Name'] or 'Radeon' in gpu['Name']:
+                    gpu_info.append({
+                        'id': i,
+                        'name': gpu['Name'],
+                        'vram': int(gpu.get('AdapterRAM', 0)) / (1024 ** 3),  # Convert to GB
+                        'driver': gpu.get('DriverVersion', 'Unknown')
+                    })
+    except Exception as e:
+        print(f"Error getting AMD GPU info: {e}")
+
+    return gpu_info
 
 
 def get_directml_provider_options():
@@ -225,6 +265,18 @@ def print_gpu_info(backend, capabilities):
 
     print()
 
+
+def setup_directml_environment(device_id=0):
+    """Set up environment variables for DirectML"""
+    os.environ["DML_DEVICE_ID"] = str(device_id)
+
+    # Optional: Set execution mode
+    # os.environ["DML_EXECUTION_MODE"] = "0"  # 0 for immediate mode, 1 for synchronous
+
+    # Optional: Set memory allocation
+    # os.environ["DML_FLUSH_AFTER_EXECUTE"] = "0"  # 0 to keep tensors in GPU memory
+
+    print(f"DirectML environment configured for device {device_id}")
 
 def test_directml_functionality():
     """Test DirectML functionality"""

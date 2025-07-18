@@ -1,3 +1,4 @@
+#config.py
 # Configuration settings
 MODEL_SIZE = "large"  # Options: tiny, base, small, medium, large
 PROCESSED_DIR = "audio/processed/"

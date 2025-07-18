@@ -1,3 +1,4 @@
+#transcribe.py
 import whisper
 import torch
 import numpy as np
@@ -12,7 +13,7 @@ from tqdm import tqdm  # For progress bars
 from config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
 from gpu_utils import setup_gpu_backend, get_device_string, get_torch_device, get_compute_type, print_gpu_info, \
-    get_directml_provider_options
+    get_directml_provider_options, get_amd_gpu_info
 
 
 class GPUWhisperTranscriber:
@@ -83,6 +84,7 @@ class GPUWhisperTranscriber:
         """Load faster-whisper model with backend-specific optimizations"""
         try:
             from faster_whisper import WhisperModel
+            import os
 
             # Show progress bar for model loading
             with tqdm(total=1, desc="Loading faster-whisper model", unit="model",
@@ -103,37 +105,55 @@ class GPUWhisperTranscriber:
                     # AMD GPU with DirectML
                     print(f"🚀 Using faster-whisper with DirectML")
 
-                    if PREFER_ONNX_DIRECTML and self.capabilities.get('directml_onnx_available', False):
-                        # Try ONNX Runtime DirectML first
-                        try:
-                            print("   - Attempting ONNX Runtime DirectML...")
-                            provider_options = get_directml_provider_options()
+                    # Get GPU selection from user if multiple GPUs are available
+                    selected_device = 0
+                    if hasattr(self, 'capabilities') and self.capabilities.get('directml_devices', 0) > 1:
+                        print("\nMultiple AMD GPUs detected:")
+                        # Display available GPUs
+                        gpu_info = get_amd_gpu_info()
+                        for i, gpu in enumerate(gpu_info):
+                            print(f"  {i}: {gpu['name']}")
 
+                        try:
+                            selected_device = int(input("\nSelect GPU by number (0, 1, etc.): "))
+                            print(f"Selected GPU {selected_device}")
+                        except:
+                            print("Invalid input, using default GPU 0")
+                            selected_device = 0
+
+                    # Configure environment for ONNX Runtime DirectML
+                    if PREFER_ONNX_DIRECTML and self.capabilities.get('directml_onnx_available', False):
+                        try:
+                            print("   - Setting up ONNX Runtime with DirectML...")
+                            # Set environment variable for DirectML device
+                            os.environ["DML_DEVICE_ID"] = str(selected_device)
+
+                            # Create model without passing providers directly
                             self.model = WhisperModel(
                                 self.model_size,
-                                device="cpu",  # Load on CPU first
+                                device="cpu",  # Always use CPU for DirectML
                                 compute_type="int8",  # DirectML works better with int8
-                                providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+                                device_index=0  # This is for CPU, not GPU
                             )
-                            print("   ✅ ONNX Runtime DirectML loaded successfully")
-
+                            print("   ✅ ONNX Runtime DirectML configured successfully")
                         except Exception as e:
-                            print(f"   ⚠️ ONNX Runtime DirectML failed: {e}")
+                            print(f"   ⚠️ ONNX Runtime DirectML setup failed: {e}")
                             print("   - Falling back to PyTorch DirectML...")
 
                             # Fallback to PyTorch DirectML
                             self.model = WhisperModel(
                                 self.model_size,
                                 device="cpu",
-                                compute_type="int8"
+                                compute_type="int8",
+                                device_index=0
                             )
-                            print("   ✅ PyTorch DirectML fallback loaded")
                     else:
                         # Use PyTorch DirectML directly
                         self.model = WhisperModel(
                             self.model_size,
                             device="cpu",
-                            compute_type="int8"
+                            compute_type="int8",
+                            device_index=0
                         )
                         print("   ✅ PyTorch DirectML loaded")
 
