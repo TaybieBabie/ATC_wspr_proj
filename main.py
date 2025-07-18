@@ -280,11 +280,11 @@ class ATCMonitor:
         self.is_monitoring = True
         self.stats['start_time'] = datetime.now()
 
-        print(f"\n🚀 Starting ATC Monitor")
-        print(f"📻 Frequency: {ATC_FREQUENCY}")
-        print(f"🎯 VAD Threshold: {self.vad_threshold}")
-        print(f"⏱️  Silence Duration: {self.silence_duration}s")
-        print(f"📡 Source: {'System Audio' if self.use_system_audio else self.stream_url}")
+        print(f"\nStarting ATC Monitor")
+        print(f"ATC Frequency: {ATC_FREQUENCY}")
+        print(f"VAD Threshold: {self.vad_threshold}")
+        print(f"⏱ Silence Cutoff Duration: {self.silence_duration}s")
+        print(f"Radio Source: {'System Audio' if self.use_system_audio else self.stream_url}")
         print("\n" + "-" * 60)
 
         #test gpu acel config
