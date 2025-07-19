@@ -248,11 +248,12 @@ class ATCMonitor:
                 break
 
         # Display analysis summary
+        # Display analysis summary
         if not alert_triggered:
             callsigns = analysis.get('overall_info', {}).get('callsigns', [])
             altitudes = analysis.get('overall_info', {}).get('altitudes', [])
             if callsigns or altitudes:
-                print(f"ℹ️  Detected: {len(callsigns)} callsigns, {len(altitudes)} altitudes")
+                info(f"Detected: {len(callsigns)} callsigns, {len(altitudes)} altitudes", emoji="🔍")
 
     def generate_alert(self, transcript, keyword, analysis):
         """Generate alert for potential non-transponder aircraft"""
@@ -320,7 +321,7 @@ class ATCMonitor:
 
         # Wait for transcription thread to finish
         if self.transcription_thread:
-            print("\n⏳ Waiting for remaining transcriptions to complete...")
+            info("Waiting for remaining transcriptions to complete...", emoji="⏳")
             self.transcription_thread.join()
 
         self.print_statistics()

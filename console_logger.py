@@ -4,6 +4,8 @@ from datetime import datetime
 from enum import Enum
 import time
 
+from tqdm import tqdm
+
 
 class LogLevel(Enum):
     DEBUG = 0
@@ -12,6 +14,51 @@ class LogLevel(Enum):
     WARNING = 3
     ERROR = 4
 
+
+class LoggingTqdm(tqdm):
+    """tqdm wrapper that integrates with our logger"""
+
+    def __init__(self, *args, **kwargs):
+        # Save current progress state
+        with logger.lock:
+            was_active = logger.progress_active
+            if was_active:
+                logger._clear_progress()
+
+        super().__init__(*args, **kwargs)
+
+        # Restore previous progress if needed
+        if was_active:
+            logger._restore_progress()
+
+    def display(self, msg=None, pos=None):
+        """Override display to use our logger for progress updates"""
+        if not msg:
+            msg = self.__str__()
+
+        with logger.lock:
+            was_active = logger.progress_active
+            if was_active:
+                logger._clear_progress()
+
+            # Display the tqdm progress
+            logger.progress(msg)
+
+
+print_lock = threading.Lock()
+
+
+def safe_print(*args, **kwargs):
+    """Thread-safe print function that respects progress bars"""
+    with logger.lock:
+        was_active = logger.progress_active
+        if was_active:
+            logger._clear_progress()
+
+        print(*args, **kwargs)
+
+        if was_active:
+            logger._restore_progress()
 
 class ConsoleLogger:
     """Thread-safe console logger with progress bar handling"""

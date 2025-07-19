@@ -313,6 +313,8 @@ def test_directml_functionality():
 
 def test_gpu_functionality():
     """Test GPU functionality for all backends"""
+    from console_logger import info, success, warning, error
+
     backend, capabilities = setup_gpu_backend()
     print_gpu_info(backend, capabilities)
 
@@ -322,16 +324,16 @@ def test_gpu_functionality():
             x = torch.randn(100, 100).to(device)
             y = torch.randn(100, 100).to(device)
             z = torch.matmul(x, y)
-            print(f"✅ CUDA tensor operations test passed")
+            success("CUDA tensor operations test passed")
             return True
         except Exception as e:
-            print(f"❌ CUDA tensor operations test failed: {e}")
+            error(f"CUDA tensor operations test failed: {e}")
             return False
     elif backend == 'directml':
         test_directml_functionality()
         return True
     else:
-        print("ℹ️  CPU backend selected")
+        info("CPU backend selected")
         return False
 
 

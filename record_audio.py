@@ -86,10 +86,11 @@ class LiveATCRecorder:
                 wf.setframerate(self.sample_rate)
                 wf.writeframes(b''.join(audio_data))
 
-            print(f"Saved transmission: {filename}")
+            # Replace standard print with logger
+            success(f"Saved transmission: {filename}", emoji="💾")
             return filename
         except Exception as e:
-            print(f"Error saving audio: {e}")
+            error(f"Error saving audio: {e}")
             return None
 
     def record_with_vad(self, frequency=None, max_duration=3600):
@@ -212,18 +213,28 @@ class LiveATCRecorder:
         except KeyboardInterrupt:
             warning("Recording stopped by user", emoji="🛑")
 
+
         finally:
+
             # Save any remaining transmission
+
             if current_transmission:
-                print("📁 Saving final transmission...")
-                self.save_audio_segment(current_transmission, frequency)
+
+                info("Saving final transmission...", emoji="📁")
+
+                filename = self.save_audio_segment(current_transmission, frequency)
+
+                if filename:
+                    success(f"Final transmission saved: {filename}", emoji="💾")
 
             # Clean up
+
             if hasattr(self, 'ffmpeg_process'):
                 self.ffmpeg_process.terminate()
+
                 self.ffmpeg_process.wait()
 
-            print("✅ Recording session completed")
+            success("Recording session completed", emoji="🎬")
 
 
 # Alternative: Using pyaudio for system audio capture

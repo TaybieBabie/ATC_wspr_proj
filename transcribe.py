@@ -87,6 +87,7 @@ class GPUWhisperTranscriber:
         try:
             from faster_whisper import WhisperModel
             import os
+            from console_logger import info, success, warning
 
             # Show progress bar for model loading
             with tqdm(total=1, desc="Loading faster-whisper model", unit="model",
@@ -95,7 +96,7 @@ class GPUWhisperTranscriber:
                 if self.backend == 'cuda':
                     # NVIDIA GPU with CUDA
                     compute_type = get_compute_type(self.backend)
-                    print(f"🚀 Using faster-whisper with CUDA, compute type: {compute_type}")
+                    info(f"Using faster-whisper with CUDA, compute type: {compute_type}", emoji="🚀")
 
                     self.model = WhisperModel(
                         self.model_size,
@@ -103,9 +104,10 @@ class GPUWhisperTranscriber:
                         compute_type=compute_type
                     )
 
+
                 elif self.backend == 'directml':
                     # AMD GPU with DirectML
-                    print(f"🚀 Using faster-whisper with DirectML")
+                    info(f"Using faster-whisper with DirectML", emoji="🚀")
 
                     # Get GPU selection from user if multiple GPUs are available
                     selected_device = 0
@@ -123,10 +125,10 @@ class GPUWhisperTranscriber:
                             print("Invalid input, using default GPU 0")
                             selected_device = 0
 
-                    # Configure environment for ONNX Runtime DirectML
+                        # Configure environment for ONNX Runtime DirectML
                     if PREFER_ONNX_DIRECTML and self.capabilities.get('directml_onnx_available', False):
                         try:
-                            print("   - Setting up ONNX Runtime with DirectML...")
+                            info("Setting up ONNX Runtime with DirectML...", emoji="⚙️")
                             # Set environment variable for DirectML device
                             os.environ["DML_DEVICE_ID"] = str(selected_device)
 
@@ -137,10 +139,10 @@ class GPUWhisperTranscriber:
                                 compute_type="int8",  # DirectML works better with int8
                                 device_index=0  # This is for CPU, not GPU
                             )
-                            print("   ✅ ONNX Runtime DirectML configured successfully")
+                            success("ONNX Runtime DirectML configured successfully", emoji="✅")
                         except Exception as e:
-                            print(f"   ⚠️ ONNX Runtime DirectML setup failed: {e}")
-                            print("   - Falling back to PyTorch DirectML...")
+                            warning(f"ONNX Runtime DirectML setup failed: {e}", emoji="⚠️")
+                            info("Falling back to PyTorch DirectML...", emoji="🔄")
 
                             # Fallback to PyTorch DirectML
                             self.model = WhisperModel(
@@ -157,12 +159,12 @@ class GPUWhisperTranscriber:
                             compute_type="int8",
                             device_index=0
                         )
-                        print("   ✅ PyTorch DirectML loaded")
+                        success("PyTorch DirectML loaded", emoji="✅")
 
                 else:
                     # CPU
                     compute_type = get_compute_type(self.backend)
-                    print(f"🚀 Using faster-whisper with CPU, compute type: {compute_type}")
+                    info(f"Using faster-whisper with CPU, compute type: {compute_type}", emoji="🚀")
 
                     self.model = WhisperModel(
                         self.model_size,
@@ -173,15 +175,15 @@ class GPUWhisperTranscriber:
                 pbar.update(1)
 
             self.using_faster_whisper = True
-            print(f"✅ faster-whisper model loaded successfully")
+            success("faster-whisper model loaded successfully")
             return True
 
         except ImportError:
-            print("⚠️ faster-whisper not installed, falling back to standard whisper")
+            warning("faster-whisper not installed, falling back to standard whisper")
             return False
         except Exception as e:
-            print(f"⚠️ Error loading faster-whisper model: {e}")
-            print("⚠️ Falling back to standard whisper")
+            warning(f"Error loading faster-whisper model: {e}")
+            warning("Falling back to standard whisper")
             return False
 
     def _load_standard_whisper(self):
@@ -392,7 +394,7 @@ class GPUWhisperTranscriber:
 
                 processing_time = result['metadata']['processing_time']
                 whisper_type = result['metadata']['whisper_type']
-                print(f"✅ Transcription complete in {processing_time:.2f}s using {whisper_type} on {self.backend}")
+                success(f"Transcription complete in {processing_time:.2f}s using {whisper_type} on {self.backend}", emoji="⏱️")
 
                 return result
             else:
@@ -487,7 +489,8 @@ def transcribe_audio(audio_file, save_transcript=True, show_progress=True):
         with open(transcript_file, 'w') as f:
             json.dump(result, f, indent=2)
 
-        print(f"📄 Transcript saved: {transcript_file}")
+        # Replace standard print with logger
+        info(f"Transcript saved: {transcript_file}", emoji="📄")
 
     return result
 
