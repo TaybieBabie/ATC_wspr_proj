@@ -55,6 +55,26 @@ class Aircraft:
 
         return self.distance_from_airport, self.bearing_from_airport
 
+    def to_dict(self) -> dict:
+        """
+        Serializes the Aircraft object to a dictionary for passing
+        through a queue to the GUI.
+        """
+        return {
+            'icao24': self.icao24,
+            'callsign': self.callsign,
+            'latitude': self.latitude,
+            'longitude': self.longitude,
+            'altitude': self.altitude,
+            'track': self.track,
+            'ground_speed': self.ground_speed,
+            'vertical_rate': self.vertical_rate,
+            'on_ground': self.on_ground,
+            'timestamp': self.timestamp.isoformat(),
+            'distance_from_airport': self.distance_from_airport,
+            'bearing_from_airport': self.bearing_from_airport
+        }
+
     def __str__(self):
         return (f"{self.callsign or self.icao24}: "
                 f"{self.altitude}ft @ {self.distance_from_airport:.1f}nm "
@@ -88,11 +108,9 @@ class OpenSkySource(ADSBDataSource):
         if time_since_last < self.rate_limit:
             time.sleep(self.rate_limit - time_since_last)
 
-        # Convert radius to degrees (approximate)
+        # Bounding box for initial query
         lat_delta = radius_nm / 60.0
         lon_delta = radius_nm / (60.0 * math.cos(math.radians(lat)))
-
-        # Bounding box
         params = {
             'lamin': lat - lat_delta,
             'lamax': lat + lat_delta,
@@ -108,37 +126,34 @@ class OpenSkySource(ADSBDataSource):
                 timeout=15
             )
             self.last_request_time = time.time()
+            response.raise_for_status()
 
-            if response.status_code == 200:
-                data = response.json()
-                aircraft_list = []
+            data = response.json()
+            aircraft_list = []
 
-                for state in data.get('states', []):
-                    # Parse OpenSky state vector
-                    if state[5] and state[6]:  # Has position
+            if data.get('states'):
+                for state in data['states']:
+                    if state[5] is not None and state[6] is not None:
                         aircraft = Aircraft(
                             icao24=state[0],
                             callsign=state[1] or "",
                             latitude=state[6],
                             longitude=state[5],
-                            altitude=state[13] * 3.28084 if state[13] else 0,  # m to ft
+                            altitude=state[13] * 3.28084 if state[13] is not None else 0,
                             track=state[10] or 0,
-                            ground_speed=state[9] * 1.94384 if state[9] else 0,  # m/s to kts
-                            vertical_rate=state[11] * 196.85 if state[11] else 0,  # m/s to ft/min
+                            ground_speed=state[9] * 1.94384 if state[9] is not None else 0,
+                            vertical_rate=state[11] * 196.85 if state[11] is not None else 0,
                             on_ground=state[8],
                             timestamp=datetime.fromtimestamp(state[3] or time.time())
                         )
                         aircraft.calculate_distance_and_bearing(lat, lon)
 
-                        # Filter by actual distance
                         if aircraft.distance_from_airport <= radius_nm:
                             aircraft_list.append(aircraft)
+            return aircraft_list
 
-                return aircraft_list
-
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             print(f"Error fetching OpenSky data: {e}")
-
         return []
 
 
@@ -149,42 +164,11 @@ class ADSBExchangeSource(ADSBDataSource):
         self.base_url = "https://adsbexchange.com/api/aircraft/v2"
         self.api_key = api_key
         self.last_request_time = 0
-        self.rate_limit = 1  # seconds between requests
+        self.rate_limit = 1
 
     def get_aircraft_in_area(self, lat: float, lon: float,
                              radius_nm: float) -> List[Aircraft]:
-        """Get aircraft from ADS-B Exchange"""
-        # Rate limiting
-        time_since_last = time.time() - self.last_request_time
-        if time_since_last < self.rate_limit:
-            time.sleep(self.rate_limit - time_since_last)
-
-        try:
-            # ADS-B Exchange uses different endpoint structure
-            params = {
-                'lat': lat,
-                'lon': lon,
-                'dist': radius_nm
-            }
-
-            headers = {}
-            if self.api_key:
-                headers['api-auth'] = self.api_key
-
-            response = requests.get(
-                f"{self.base_url}/lat/{lat}/lon/{lon}/dist/{radius_nm}/",
-                headers=headers,
-                timeout=15
-            )
-            self.last_request_time = time.time()
-
-            # Parse response...
-            # (Implementation depends on specific API version)
-
-        except Exception as e:
-            print(f"Error fetching ADS-B Exchange data: {e}")
-
-        return []
+        return [] # Placeholder
 
 
 class LocalADSBSource(ADSBDataSource):
@@ -195,41 +179,34 @@ class LocalADSBSource(ADSBDataSource):
 
     def get_aircraft_in_area(self, lat: float, lon: float,
                              radius_nm: float) -> List[Aircraft]:
-        """Get aircraft from local dump1090"""
         try:
             response = requests.get(
                 f"{self.dump1090_url}/data/aircraft.json",
                 timeout=5
             )
-
-            if response.status_code == 200:
-                data = response.json()
-                aircraft_list = []
-
-                for ac in data.get('aircraft', []):
-                    if 'lat' in ac and 'lon' in ac:
-                        aircraft = Aircraft(
-                            icao24=ac.get('hex', ''),
-                            callsign=ac.get('flight', ''),
-                            latitude=ac['lat'],
-                            longitude=ac['lon'],
-                            altitude=ac.get('alt_baro', ac.get('alt_geom', 0)),
-                            track=ac.get('track', 0),
-                            ground_speed=ac.get('gs', 0),
-                            vertical_rate=ac.get('vert_rate', 0),
-                            on_ground=ac.get('alt_baro', 1000) < 100,
-                            timestamp=datetime.now()
-                        )
-                        aircraft.calculate_distance_and_bearing(lat, lon)
-
-                        if aircraft.distance_from_airport <= radius_nm:
-                            aircraft_list.append(aircraft)
-
-                return aircraft_list
-
-        except Exception as e:
+            response.raise_for_status()
+            data = response.json()
+            aircraft_list = []
+            for ac in data.get('aircraft', []):
+                if 'lat' in ac and 'lon' in ac:
+                    aircraft = Aircraft(
+                        icao24=ac.get('hex', ''),
+                        callsign=ac.get('flight', ''),
+                        latitude=ac['lat'],
+                        longitude=ac['lon'],
+                        altitude=ac.get('alt_baro', ac.get('alt_geom', 0)),
+                        track=ac.get('track', 0),
+                        ground_speed=ac.get('gs', 0),
+                        vertical_rate=ac.get('vert_rate', 0),
+                        on_ground=ac.get('alt_baro', 1000) < 100,
+                        timestamp=datetime.now()
+                    )
+                    aircraft.calculate_distance_and_bearing(lat, lon)
+                    if aircraft.distance_from_airport <= radius_nm:
+                        aircraft_list.append(aircraft)
+            return aircraft_list
+        except requests.exceptions.RequestException as e:
             print(f"Error fetching local ADS-B data: {e}")
-
         return []
 
 
@@ -240,54 +217,23 @@ class ADSBTracker:
         self.data_source = data_source or OpenSkySource(
             OPENSKY_USERNAME, OPENSKY_PASSWORD
         )
-        self.aircraft_history = {}  # Store historical positions
-        self.current_aircraft = {}  # Current aircraft in area
+        self.aircraft_history = {}
+        self.current_aircraft = {}
 
     def update_aircraft_positions(self):
         """Fetch current aircraft positions"""
         aircraft_list = self.data_source.get_aircraft_in_area(
             AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM
         )
-
-        # Update current aircraft dict
-        self.current_aircraft = {
-            ac.callsign: ac for ac in aircraft_list if ac.callsign
-        }
-
-        # Also store by ICAO24 for non-callsign lookups
-        for ac in aircraft_list:
-            self.current_aircraft[ac.icao24] = ac
-
-        # Update history
-        timestamp = datetime.now()
-        for ac in aircraft_list:
-            if ac.callsign not in self.aircraft_history:
-                self.aircraft_history[ac.callsign] = []
-            self.aircraft_history[ac.callsign].append({
-                'timestamp': timestamp,
-                'aircraft': ac
-            })
-
+        self.current_aircraft = {ac.icao24: ac for ac in aircraft_list}
         return aircraft_list
 
     def find_aircraft_by_callsign(self, callsign: str) -> Optional[Aircraft]:
         """Find aircraft by callsign (handles variations)"""
         callsign = callsign.upper().strip()
-
-        # Direct match
-        if callsign in self.current_aircraft:
-            return self.current_aircraft[callsign]
-
-        # Try without spaces
-        callsign_no_space = callsign.replace(" ", "")
-        if callsign_no_space in self.current_aircraft:
-            return self.current_aircraft[callsign_no_space]
-
-        # Partial match
-        for call, aircraft in self.current_aircraft.items():
-            if callsign in call or call in callsign:
+        for aircraft in self.current_aircraft.values():
+            if aircraft.callsign == callsign:
                 return aircraft
-
         return None
 
     def get_aircraft_at_altitude(self, altitude: int,
@@ -295,9 +241,8 @@ class ADSBTracker:
         """Find aircraft at specific altitude ± tolerance"""
         results = []
         for aircraft in self.current_aircraft.values():
-            if isinstance(aircraft, Aircraft):
-                if abs(aircraft.altitude - altitude) <= tolerance:
-                    results.append(aircraft)
+            if abs(aircraft.altitude - altitude) <= tolerance:
+                results.append(aircraft)
         return results
 
     def get_aircraft_by_position(self, bearing: float, distance: float,
@@ -306,8 +251,7 @@ class ADSBTracker:
         """Find aircraft by position relative to airport"""
         results = []
         for aircraft in self.current_aircraft.values():
-            if isinstance(aircraft, Aircraft):
-                if (abs(aircraft.bearing_from_airport - bearing) <= bearing_tolerance and
-                        abs(aircraft.distance_from_airport - distance) <= distance_tolerance):
-                    results.append(aircraft)
+            if (abs(aircraft.bearing_from_airport - bearing) <= bearing_tolerance and
+                    abs(aircraft.distance_from_airport - distance) <= distance_tolerance):
+                results.append(aircraft)
         return results

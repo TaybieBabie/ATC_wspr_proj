@@ -1,4 +1,4 @@
-#main.py
+# main.py
 import argparse
 import os
 import time
@@ -9,24 +9,27 @@ from record_audio import LiveATCRecorder, SystemAudioRecorder
 from transcribe import transcribe_audio
 from analyze import analyze_transcript
 from config import (ATC_FREQUENCY, LIVEATC_STREAM_URL, VAD_THRESHOLD,
-                    SILENCE_DURATION, AUDIO_DIR, OPENSKY_USERNAME, OPENSKY_PASSWORD)
+                    SILENCE_DURATION, AUDIO_DIR, OPENSKY_USERNAME, OPENSKY_PASSWORD,
+                    ENABLE_ADSB, ADSB_SOURCE)
 from adsb_tracker import ADSBTracker, OpenSkySource, LocalADSBSource
 from correlator import ATCCorrelator
-from console_logger import info, success, warning, error, section, ProgressBar
+from console_logger import info, success, warning, error, section
+from map_gui import MapApp
+
 
 class ATCMonitor:
-    """Main monitoring system that coordinates recording, transcription, and analysis"""
+    """Main monitoring system that runs in a background thread."""
 
-    def __init__(self, stream_url=None, use_system_audio=False,
-                 vad_threshold=VAD_THRESHOLD, silence_duration=SILENCE_DURATION,
-                 enable_adsb=True, adsb_source='opensky'):
-        self.stream_url = stream_url or LIVEATC_STREAM_URL
-        self.use_system_audio = use_system_audio
-        self.vad_threshold = vad_threshold
-        self.silence_duration = silence_duration
+    def __init__(self, monitor_params: dict):
+        self.params = monitor_params
+        self.stream_url = monitor_params.get('stream_url') or LIVEATC_STREAM_URL
+        self.use_system_audio = monitor_params.get('use_system_audio', False)
+        self.vad_threshold = monitor_params.get('vad_threshold', VAD_THRESHOLD)
+        self.silence_duration = monitor_params.get('silence_duration', SILENCE_DURATION)
+
         self.audio_queue = queue.Queue()
         self.is_monitoring = False
-        self.transcription_thread = None
+        self.gui_queue = None
 
         # Statistics
         self.stats = {
@@ -38,264 +41,81 @@ class ATCMonitor:
         }
 
         # Initialize ADS-B tracking
-        self.enable_adsb = enable_adsb
+        self.enable_adsb = ENABLE_ADSB
         if self.enable_adsb:
-            # Select ADS-B data source
-            if adsb_source == 'opensky':
+            if ADSB_SOURCE == 'opensky':
                 source = OpenSkySource(OPENSKY_USERNAME, OPENSKY_PASSWORD)
-            elif adsb_source == 'local':
+            elif ADSB_SOURCE == 'local':
                 source = LocalADSBSource()
             else:
-                source = OpenSkySource()  # default
-
+                source = OpenSkySource()
             self.adsb_tracker = ADSBTracker(source)
             self.correlator = ATCCorrelator(self.adsb_tracker)
 
-            # Start ADS-B update thread
-            self.adsb_thread = threading.Thread(target=self.adsb_update_worker)
-            self.adsb_thread.daemon = True
-            self.adsb_thread.start()
-
-    def test_gpu_setup(self):
-        from gpu_utils import setup_gpu_backend, print_gpu_info, test_gpu_functionality
-
-        print("🧪 Testing GPU setup...")
-        success = test_gpu_functionality()
-
-        if success:
-            print("✅ GPU acceleration test completed successfully")
-        else:
-            print("⚠️ GPU acceleration test completed with issues")
-
-        # Test faster-whisper with detected backend
-        backend, capabilities = setup_gpu_backend()
-
-        if backend == 'cuda':
-            try:
-                from faster_whisper import WhisperModel
-                model = WhisperModel("tiny", device="cuda", compute_type="float16")
-                print("✅ faster-whisper CUDA test successful")
-                del model
-            except Exception as e:
-                print(f"❌ faster-whisper CUDA test failed: {e}")
-
-        elif backend == 'directml':
-            try:
-                from faster_whisper import WhisperModel
-                model = WhisperModel("tiny", device="cpu", compute_type="int8")
-                print("✅ faster-whisper DirectML test successful")
-                del model
-            except Exception as e:
-                print(f"❌ faster-whisper DirectML test failed: {e}")
-
-        # Test standard whisper
-        try:
-            import whisper
-            model = whisper.load_model("tiny", device='cpu')
-            print("✅ Standard whisper test successful")
-            del model
-        except Exception as e:
-            print(f"❌ Standard whisper test failed: {e}")
+    def set_gui_queue(self, gui_queue: queue.Queue):
+        """Set the queue for communicating with the GUI."""
+        self.gui_queue = gui_queue
 
     def adsb_update_worker(self):
-        """Background thread to update ADS-B data"""
+        """Background thread to update ADS-B data."""
+        info("ADS-B updater thread started.", emoji="📡")
         while self.is_monitoring:
             try:
-                aircraft = self.adsb_tracker.update_aircraft_positions()
-                print(f"📡 ADS-B Update: {len(aircraft)} aircraft in area")
-                time.sleep(30)  # Update every 30 seconds
+                aircraft_list = self.adsb_tracker.update_aircraft_positions()
+                info(f"ADS-B Update: {len(aircraft_list)} aircraft in area")
+
+                if self.gui_queue:
+                    for aircraft in aircraft_list:
+                        self.gui_queue.put(("update_aircraft", aircraft.to_dict()))
+
+                time.sleep(15)
             except Exception as e:
-                print(f"❌ ADS-B update error: {e}")
-                time.sleep(60)  # Wait longer on error
-
-    def process_analysis(self, analysis, transcript_text):
-        """Enhanced analysis with ADS-B correlation"""
-        # Original analysis
-        super().process_analysis(analysis, transcript_text)
-
-        # ADS-B correlation
-        if self.enable_adsb:
-            correlation = self.correlator.correlate_transcript(
-                transcript_text, datetime.now()
-            )
-
-            # Process correlation results
-            if correlation['uncorrelated_callsigns']:
-                print(f"⚠️  Uncorrelated callsigns: {', '.join(correlation['uncorrelated_callsigns'])}")
-
-            # Process alerts
-            for alert in correlation['alerts']:
-                if alert['type'] == 'untracked_aircraft':
-                    self.generate_enhanced_alert(alert, transcript_text, correlation)
-                elif alert['type'] == 'possible_non_transponder':
-                    self.generate_possible_alert(alert, transcript_text, correlation)
-
-            # Update stats
-            self.stats['correlation_alerts'] = self.stats.get('correlation_alerts', 0) + len(correlation['alerts'])
-
-    def generate_enhanced_alert(self, alert, transcript, correlation):
-        """Enhanced alert with ADS-B correlation data"""
-        print("\n" + "=" * 60)
-        print("🚨 ALERT: UNTRACKED AIRCRAFT DETECTED 🚨")
-        print("=" * 60)
-        print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Callsign: {alert['callsign']}")
-        print(f"Reported altitude: {alert.get('altitude', 'Unknown')} ft")
-        print(f"Transcript: {transcript}")
-        print("\n📡 ADS-B Correlation:")
-        print(f"  - Aircraft in area: {len(self.adsb_tracker.current_aircraft)}")
-        print(f"  - No ADS-B match found for {alert['callsign']}")
-
-        # List nearby aircraft
-        if alert.get('altitude'):
-            nearby = self.adsb_tracker.get_aircraft_at_altitude(
-                alert['altitude'], tolerance=1000
-            )
-            if nearby:
-                print(f"\n  Nearby aircraft at similar altitude:")
-                for ac in nearby[:5]:  # Limit to 5
-                    print(f"    - {ac}")
-
-        print("=" * 60 + "\n")
-
-        # Log to file
-        self.log_alert(alert, transcript, correlation)
-
-    def recording_callback(self, audio_file):
-        """Callback when a new audio file is saved"""
-        self.audio_queue.put(audio_file)
-        self.stats['transmissions_recorded'] += 1
+                error(f"ADS-B update error: {e}")
+                time.sleep(60)
+        info("ADS-B updater thread stopped.")
 
     def transcription_worker(self):
-        """Worker thread for processing audio files"""
-        # Track queue size for progress
-        initial_queue_size = self.audio_queue.qsize()
-        processed_count = 0
-
-        while self.is_monitoring or not self.audio_queue.empty():
+        """Worker thread for processing audio files."""
+        info("Transcription worker thread started.", emoji="📝")
+        while self.is_monitoring:
             try:
-                # Wait for audio files with timeout
                 audio_file = self.audio_queue.get(timeout=1)
-                processed_count += 1
+                info(f"Processing: {os.path.basename(audio_file)} [Queue: {self.audio_queue.qsize()}]", emoji="🔄")
 
-                # Show queue progress
-                queue_size = self.audio_queue.qsize()
-                info(f"Processing: {os.path.basename(audio_file)} [{processed_count}/{processed_count + queue_size}]",
-                     emoji="🔄")
-
-                # Transcribe with progress bar
                 try:
-                    result = transcribe_audio(audio_file, show_progress=True)
+                    result = transcribe_audio(audio_file, show_progress=False)
                     self.stats['transmissions_transcribed'] += 1
 
                     if result and result.get('text', '').strip():
-                        info(f"Transcript: {result['text']}", emoji="📝")
-
-                        # Save transcript
+                        transcript_text = result['text'].strip()
+                        info(f"Transcript: \"{transcript_text}\"", emoji="🗣️")
                         transcript_file = self.save_transcript(audio_file, result)
-
-                        # Analyze
                         analysis = analyze_transcript(transcript_file)
-
-                        # Process analysis results
-                        self.process_analysis(analysis, result['text'])
-                    else:
-                        warning("No speech detected in transmission")
-
+                        self.process_analysis(analysis, transcript_text)
                 except Exception as e:
                     error(f"Error processing {audio_file}: {e}")
-
+                finally:
+                    self.audio_queue.task_done()
             except queue.Empty:
                 continue
-            except Exception as e:
-                error(f"Worker thread error: {e}")
+        info("Transcription worker stopped.")
 
-    def save_transcript(self, audio_file, transcript_result):
-        """Save transcript to JSON file"""
-        transcript_dir = 'transcripts'
-        if not os.path.exists(transcript_dir):
-            os.makedirs(transcript_dir)
-
-        base_name = os.path.basename(audio_file).replace('.wav', '')
-        transcript_file = os.path.join(transcript_dir, f"{base_name}_transcript.json")
-
-        import json
-        with open(transcript_file, 'w') as f:
-            json.dump(transcript_result, f, indent=2)
-
-        return transcript_file
-
-    def process_analysis(self, analysis, transcript_text):
-        """Process analysis results and generate alerts"""
-        # Update statistics
-        for callsign in analysis.get('overall_info', {}).get('callsigns', []):
-            self.stats['callsigns_detected'].add(callsign)
-
-        # Check for non-transponder indicators
-        non_transponder_keywords = [
-            'primary target', 'no transponder', 'primary only',
-            'radar contact', 'unidentified', '1200', 'vfr'
-        ]
-
-        transcript_lower = transcript_text.lower()
-        alert_triggered = False
-
-        for keyword in non_transponder_keywords:
-            if keyword in transcript_lower:
-                alert_triggered = True
-                self.stats['non_transponder_alerts'] += 1
-                self.generate_alert(transcript_text, keyword, analysis)
-                break
-
-        # Display analysis summary
-        # Display analysis summary
-        if not alert_triggered:
-            callsigns = analysis.get('overall_info', {}).get('callsigns', [])
-            altitudes = analysis.get('overall_info', {}).get('altitudes', [])
-            if callsigns or altitudes:
-                info(f"Detected: {len(callsigns)} callsigns, {len(altitudes)} altitudes", emoji="🔍")
-
-    def generate_alert(self, transcript, keyword, analysis):
-        """Generate alert for potential non-transponder aircraft"""
-        print("\n" + "=" * 60)
-        print("🚨 ALERT: POTENTIAL NON-TRANSPONDER AIRCRAFT DETECTED 🚨")
-        print("=" * 60)
-        print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Keyword detected: '{keyword}'")
-        print(f"Full transcript: {transcript}")
-
-        callsigns = analysis.get('overall_info', {}).get('callsigns', [])
-        if callsigns:
-            print(f"Callsigns mentioned: {', '.join(callsigns)}")
-
-        print("=" * 60 + "\n")
-
-        # Here you could add:
-        # - Email notification
-        # - SMS alert
-        # - Log to file
-        # - Play alert sound
-
-    def start_monitoring(self, duration=None):
-        """Start the monitoring system"""
+    def start_monitoring(self):
+        """Start all background monitoring tasks."""
         self.is_monitoring = True
         self.stats['start_time'] = datetime.now()
 
-        print(f"\nStarting ATC Monitor")
-        print(f"ATC Frequency: {ATC_FREQUENCY}")
-        print(f"VAD Threshold: {self.vad_threshold}")
-        print(f"⏱ Silence Cutoff Duration: {self.silence_duration}s")
-        print(f"Radio Source: {'System Audio' if self.use_system_audio else self.stream_url}")
-        print("\n" + "-" * 60)
+        section("Starting Background Monitoring", emoji="🚀")
 
-        #test gpu acel config
-        self.test_gpu_setup()
+        # Start worker threads
+        transcription_thread = threading.Thread(target=self.transcription_worker, daemon=True)
+        transcription_thread.start()
 
-        # Start transcription worker thread
-        self.transcription_thread = threading.Thread(target=self.transcription_worker)
-        self.transcription_thread.start()
+        if self.enable_adsb:
+            adsb_thread = threading.Thread(target=self.adsb_update_worker, daemon=True)
+            adsb_thread.start()
 
-        # Enhanced recorder with callback
+        # This part will block until the recorder finishes or is interrupted
         if self.use_system_audio:
             recorder = EnhancedSystemAudioRecorder(
                 vad_threshold=self.vad_threshold,
@@ -310,45 +130,66 @@ class ATCMonitor:
                 silence_duration=self.silence_duration,
                 callback=self.recording_callback
             )
+            recorder.record_with_vad(frequency=ATC_FREQUENCY, max_duration=self.params.get('duration'))
 
-            if duration:
-                recorder.record_with_vad(frequency=ATC_FREQUENCY, max_duration=duration)
-            else:
-                recorder.record_with_vad(frequency=ATC_FREQUENCY)
+        # This will be reached when the recorder stops
+        self.stop_monitoring()
 
-        # Stop monitoring
-        self.is_monitoring = False
+    def stop_monitoring(self):
+        """Signal all background threads to stop."""
+        if self.is_monitoring:
+            self.is_monitoring = False
+            info("Stopping monitoring tasks...", emoji="🛑")
+            self.print_statistics()
 
-        # Wait for transcription thread to finish
-        if self.transcription_thread:
-            info("Waiting for remaining transcriptions to complete...", emoji="⏳")
-            self.transcription_thread.join()
+    def recording_callback(self, audio_file):
+        """Callback when a new audio file is saved."""
+        if self.is_monitoring:
+            self.audio_queue.put(audio_file)
+            self.stats['transmissions_recorded'] += 1
 
-        self.print_statistics()
+    def save_transcript(self, audio_file, transcript_result):
+        """Save transcript to JSON file."""
+        transcript_dir = 'transcripts'
+        os.makedirs(transcript_dir, exist_ok=True)
+        base_name = os.path.basename(audio_file).replace('.wav', '')
+        transcript_file = os.path.join(transcript_dir, f"{base_name}_transcript.json")
+        import json
+        with open(transcript_file, 'w') as f:
+            json.dump(transcript_result, f, indent=2)
+        return transcript_file
+
+    def process_analysis(self, analysis, transcript_text):
+        """Process analysis results and generate alerts."""
+        for callsign in analysis.get('overall_info', {}).get('callsigns', []):
+            self.stats['callsigns_detected'].add(callsign)
+
+        if self.enable_adsb:
+            correlation = self.correlator.correlate_transcript(transcript_text, datetime.now())
+            for alert in correlation['alerts']:
+                self.stats['non_transponder_alerts'] += 1
+                section(f"🚨 ALERT: {alert['type'].upper()} 🚨", emoji="🚨")
+                info(f"Details: {alert}")
+                info(f"Transcript: \"{transcript_text}\"")
 
     def print_statistics(self):
-        """Print monitoring session statistics"""
+        """Print monitoring session statistics."""
         if self.stats['start_time']:
             duration = datetime.now() - self.stats['start_time']
-
             section("MONITORING SESSION STATISTICS", emoji="📊")
-            info(f"Duration: {duration}")
+            info(f"Duration: {str(duration).split('.')[0]}")
             info(f"Transmissions recorded: {self.stats['transmissions_recorded']}")
             info(f"Transmissions transcribed: {self.stats['transmissions_transcribed']}")
-            info(f"Non-transponder alerts: {self.stats['non_transponder_alerts']}")
+            info(f"Potential non-transponder alerts: {self.stats['non_transponder_alerts']}")
             info(f"Unique callsigns detected: {len(self.stats['callsigns_detected'])}")
-            if self.stats['callsigns_detected']:
-                info(f"Callsigns: {', '.join(sorted(self.stats['callsigns_detected']))}")
 
 
-# Enhanced recorder classes with callbacks
 class EnhancedLiveATCRecorder(LiveATCRecorder):
     def __init__(self, stream_url, vad_threshold=0.01, silence_duration=2.0, callback=None):
         super().__init__(stream_url, vad_threshold, silence_duration)
         self.callback = callback
 
     def save_audio_segment(self, audio_data, frequency=None):
-        """Override to add callback"""
         filename = super().save_audio_segment(audio_data, frequency)
         if filename and self.callback:
             self.callback(filename)
@@ -361,7 +202,6 @@ class EnhancedSystemAudioRecorder(SystemAudioRecorder):
         self.callback = callback
 
     def save_audio_segment(self, audio_data, frequency=None):
-        """Override to add callback"""
         filename = super().save_audio_segment(audio_data, frequency)
         if filename and self.callback:
             self.callback(filename)
@@ -369,93 +209,31 @@ class EnhancedSystemAudioRecorder(SystemAudioRecorder):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='ATC Communication Monitoring, Transcription and Analysis',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Monitor LiveATC stream continuously
-  python main.py --monitor
-
-  # Monitor for 1 hour with custom VAD threshold
-  python main.py --monitor --duration 3600 --vad-threshold 0.03
-
-  # Monitor system audio instead of stream
-  python main.py --monitor --system-audio
-
-  # Run legacy single recording
-  python main.py --record 60
-
-  # Transcribe a specific file
-  python main.py --transcribe audio/transmission_20250114_123456.wav
-        """
-    )
-
-    # New monitoring mode
-    parser.add_argument('--monitor', action='store_true',
-                        help='Start continuous monitoring with VAD')
-    parser.add_argument('--duration', type=int,
-                        help='Monitoring duration in seconds (default: continuous)')
-    parser.add_argument('--vad-threshold', type=float, default=VAD_THRESHOLD,
-                        help=f'Voice activity detection threshold (default: {VAD_THRESHOLD})')
-    parser.add_argument('--silence-duration', type=float, default=SILENCE_DURATION,
-                        help=f'Seconds of silence before ending recording (default: {SILENCE_DURATION})')
-    parser.add_argument('--stream-url', type=str, default=LIVEATC_STREAM_URL,
-                        help='LiveATC stream URL')
-    parser.add_argument('--system-audio', action='store_true',
-                        help='Record from system audio instead of stream')
-
-    # Legacy modes
-    parser.add_argument('--record', type=int,
-                        help='Record audio for specified duration in seconds (legacy mode)')
-    parser.add_argument('--transcribe', type=str,
-                        help='Transcribe specified audio file')
-    parser.add_argument('--analyze', type=str,
-                        help='Analyze specified transcript file')
-    parser.add_argument('--pipeline', type=int,
-                        help='Run full pipeline: record, transcribe, and analyze (legacy mode)')
-
+    parser = argparse.ArgumentParser(description='ATC Communication Monitor')
+    parser.add_argument('--monitor', action='store_true', help='Start continuous monitoring')
+    parser.add_argument('--duration', type=int, help='Monitoring duration in seconds')
+    parser.add_argument('--vad-threshold', type=float, default=VAD_THRESHOLD)
+    parser.add_argument('--silence-duration', type=float, default=SILENCE_DURATION)
+    parser.add_argument('--stream-url', type=str, default=LIVEATC_STREAM_URL)
+    parser.add_argument('--system-audio', action='store_true')
     args = parser.parse_args()
 
-    # New monitoring mode
     if args.monitor:
-        monitor = ATCMonitor(
-            stream_url=args.stream_url,
-            use_system_audio=args.system_audio,
-            vad_threshold=args.vad_threshold,
-            silence_duration=args.silence_duration
-        )
+        # 1. Create the business logic object
+        monitor_params = vars(args)
+        atc_monitor = ATCMonitor(monitor_params)
 
-        try:
-            monitor.start_monitoring(duration=args.duration)
-        except KeyboardInterrupt:
-            print("\n\n🛑 Monitoring stopped by user")
-            monitor.is_monitoring = False
+        # 2. Start the business logic in a background thread
+        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring, daemon=True)
+        monitor_thread.start()
 
-    # Legacy modes
-    elif args.record:
-        from record_audio import record_audio
-        audio_file = record_audio(duration=args.record, frequency=ATC_FREQUENCY)
+        # 3. Create and run the GUI in the main thread
+        app = MapApp(atc_monitor)
+        app.mainloop()
 
-    elif args.pipeline:
-        print("Running full pipeline...")
-        from record_audio import record_audio
-        audio_file = record_audio(duration=args.pipeline, frequency=ATC_FREQUENCY)
-        transcript = transcribe_audio(audio_file)
-        transcript_file = os.path.join('transcripts',
-                                       os.path.basename(audio_file).replace('.wav', '_transcript.json'))
-        analysis = analyze_transcript(transcript_file)
-        print("\nTranscription:")
-        print(transcript['text'])
-        print("\nAnalysis:")
-        print(f"Detected {len(analysis['overall_info']['callsigns'])} callsigns")
-        print(f"Detected {len(analysis['overall_info']['altitudes'])} altitude instructions")
-
-    elif args.transcribe:
-        transcribe_audio(args.transcribe)
-
-    elif args.analyze:
-        analyze_transcript(args.analyze)
+        # This code will run after the GUI window is closed
+        info("Application has been closed.")
+        # The daemon threads will exit automatically
 
     else:
         parser.print_help()

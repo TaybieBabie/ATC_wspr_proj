@@ -36,11 +36,11 @@ SILENCE_DURATION = 3.0  # Seconds of silence before ending recording
 MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
 
 # LiveATC settings
-LIVEATC_STREAM_URL = "https://s1-bos.liveatc.net/kmsp3_twr_12r?nocache=2025071302515286063"  # Replace with your local feed
+LIVEATC_STREAM_URL = "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=2025071901325928523"  # Replace with your local feed
 
 # Airport/Monitoring Area Configuration
-AIRPORT_LAT = 40.6413  # Your airport latitude (e.g., JFK)
-AIRPORT_LON = -73.7781  # Your airport longitude
+AIRPORT_LAT = 45.588699  # Your airport latitude (e.g., JFK)
+AIRPORT_LON = -122.5975  # Your airport longitude
 SEARCH_RADIUS_NM = 30  # Nautical miles radius to monitor
 
 # ADS-B Configuration
