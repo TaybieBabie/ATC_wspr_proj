@@ -1,5 +1,6 @@
 """
-ATC Monitor Core Logic
+monitor.py
+-ATC Monitor Core Logic
 
 This module contains the main business logic for the ATC monitoring system.
 It coordinates between different subsystems (audio recording, transcription, 
@@ -64,6 +65,11 @@ class ATCMonitor:
     def adsb_update_worker(self):
         """Background thread to update ADS-B data."""
         info("ADS-B updater thread started.", emoji="📡")
+
+        # For non-authenticated OpenSky access, we're limited to 10 seconds between requests
+        # But we can make it appear smoother by interpolating positions
+        update_interval = 10 if not (OPENSKY_USERNAME and OPENSKY_PASSWORD) else 5
+
         while self.is_monitoring:
             try:
                 aircraft_list = self.adsb_tracker.update_aircraft_positions()
@@ -73,7 +79,7 @@ class ATCMonitor:
                     for aircraft in aircraft_list:
                         self.gui_queue.put(("update_aircraft", aircraft.to_dict()))
 
-                time.sleep(15)
+                time.sleep(update_interval)
             except Exception as e:
                 error(f"ADS-B update error: {e}")
                 time.sleep(60)

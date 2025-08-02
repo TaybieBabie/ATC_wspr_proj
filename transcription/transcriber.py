@@ -1,4 +1,3 @@
-# transcription/transcriber.py
 import whisper
 import torch
 import numpy as np
@@ -14,7 +13,7 @@ from utils.console_logger import info, success, error, ProgressBar, warning
 from utils.config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
 from utils.gpu_utils import setup_gpu_backend, get_device_string, get_torch_device, get_compute_type, print_gpu_info, \
-    get_directml_provider_options, get_amd_gpu_info
+    get_directml_provider_options, get_amd_gpu_info, TORCH_DIRECTML_AVAILABLE, ONNX_RUNTIME_AVAILABLE
 
 
 class GPUWhisperTranscriber:
@@ -71,10 +70,19 @@ class GPUWhisperTranscriber:
         """A single attempt to load the model using a specific backend."""
         info(f"Attempting to load model '{self.model_size}' with backend '{backend}'...")
         try:
-            if USE_FASTER_WHISPER:
+            # For DirectML, always use faster-whisper with ONNX Runtime
+            if backend == 'directml' and USE_FASTER_WHISPER:
+                self._load_faster_whisper(backend)
+            elif backend == 'cuda' and USE_FASTER_WHISPER:
+                self._load_faster_whisper(backend)
+            elif backend == 'cpu' and USE_FASTER_WHISPER:
                 self._load_faster_whisper(backend)
             else:
-                self._load_standard_whisper(backend)
+                # Standard whisper only for CUDA and CPU (not DirectML)
+                if backend != 'directml':
+                    self._load_standard_whisper(backend)
+                else:
+                    raise Exception("Standard whisper does not support DirectML. Enable USE_FASTER_WHISPER in config.")
 
             if self.model:
                 self.current_backend = backend
@@ -92,24 +100,73 @@ class GPUWhisperTranscriber:
         """Load faster-whisper model for a given backend."""
         from faster_whisper import WhisperModel
 
-        device_string = "cuda" if backend == 'cuda' else "cpu"
-        compute_type = get_compute_type(backend)
+        if backend == 'cuda':
+            # NVIDIA GPU with CUDA
+            compute_type = get_compute_type(backend)
+            info(f"Using faster-whisper with CUDA, compute type: {compute_type}", emoji="🚀")
 
-        info(f"Using faster-whisper with: device='{device_string}', compute_type='{compute_type}'", emoji="🚀")
+            self.model = WhisperModel(
+                self.model_size,
+                device="cuda",
+                compute_type=compute_type
+            )
 
-        self.model = WhisperModel(
-            self.model_size,
-            device=device_string,
-            compute_type=compute_type
-        )
+        elif backend == 'directml':
+            # AMD GPU with DirectML through ONNX Runtime
+            info(f"Using faster-whisper with DirectML (ONNX Runtime)", emoji="🚀")
+
+            # Check if ONNX Runtime with DirectML is available
+            if not self.capabilities.get('directml_onnx_available', False):
+                raise Exception("ONNX Runtime with DirectML is not available")
+
+            # Configure for DirectML
+            selected_device = 0
+            if self.capabilities.get('directml_devices', 0) > 1:
+                info("Multiple AMD GPUs detected")
+                gpu_info = get_amd_gpu_info()
+                for i, gpu in enumerate(gpu_info):
+                    info(f"  {i}: {gpu['name']}")
+                # For automated setup, just use first GPU
+                selected_device = 0
+                info(f"Using GPU {selected_device}")
+
+            # Set environment variable for DirectML device
+            os.environ["DML_DEVICE_ID"] = str(selected_device)
+
+            # Create model with CPU device (faster-whisper will use ONNX Runtime with DirectML internally)
+            self.model = WhisperModel(
+                self.model_size,
+                device="cpu",  # Must be CPU for DirectML
+                compute_type="int8",  # DirectML works best with int8
+                device_index=0  # This is for CPU, not GPU
+            )
+
+            success("faster-whisper loaded with DirectML backend", emoji="✅")
+
+        else:
+            # CPU
+            compute_type = get_compute_type(backend)
+            info(f"Using faster-whisper with CPU, compute type: {compute_type}", emoji="🚀")
+
+            self.model = WhisperModel(
+                self.model_size,
+                device="cpu",
+                compute_type=compute_type
+            )
+
         self.whisper_type = "faster-whisper"
 
     def _load_standard_whisper(self, backend):
         """Load standard OpenAI Whisper model for a given backend."""
-        device = get_torch_device(backend)
-        info(f"Using standard whisper with device: {device}")
+        if backend == 'cuda':
+            device = get_torch_device(backend)
+            info(f"Using standard whisper with device: {device}")
+            self.model = whisper.load_model(self.model_size, device=device)
+        else:
+            # CPU
+            info("Using standard whisper with CPU")
+            self.model = whisper.load_model(self.model_size, device='cpu')
 
-        self.model = whisper.load_model(self.model_size, device=device)
         self.whisper_type = "standard-whisper"
 
     def setup_radio_optimization(self):
@@ -128,6 +185,12 @@ class GPUWhisperTranscriber:
                     audio = self.radio_filter(audio, sr)
                 if self.radio_opts.get('normalize'):
                     audio = librosa.util.normalize(audio)
+
+            # Ensure audio is float32 and contiguous
+            if audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+            audio = np.ascontiguousarray(audio)
+
             return audio
         except Exception as e:
             error(f"Error preprocessing audio {audio_path}: {e}")
@@ -186,7 +249,6 @@ class GPUWhisperTranscriber:
         try:
             audio = self.preprocess_audio(audio_file)
 
-            # --- FIXED TRANSCRIPTION LOGIC ---
             if self.whisper_type == "faster-whisper":
                 # faster-whisper has a different API and returns a generator
                 segments, _ = self.model.transcribe(
@@ -203,7 +265,7 @@ class GPUWhisperTranscriber:
                 text = ' '.join([seg['text'].strip() for seg in text_segments])
 
             else:
-                # Standard whisper can take the options dictionary directly
+                # Standard whisper
                 result = self.model.transcribe(audio, **default_options)
                 text = result.get("text", "")
                 text_segments = result.get("segments", [])
@@ -221,6 +283,7 @@ class GPUWhisperTranscriber:
                 }
             }
 
+            # Clear GPU memory if using GPU
             if self.current_backend == 'cuda' and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
