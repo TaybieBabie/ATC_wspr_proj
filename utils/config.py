@@ -41,7 +41,7 @@ LIVEATC_STREAM_URL = "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=202507
 # Airport/Monitoring Area Configuration
 AIRPORT_LAT = 45.588699  # Your airport latitude (e.g., JFK)
 AIRPORT_LON = -122.5975  # Your airport longitude
-SEARCH_RADIUS_NM = 30  # Nautical miles radius to monitor
+SEARCH_RADIUS_NM = 50  # Nautical miles radius to monitor
 
 # ADS-B Configuration
 ENABLE_ADSB = True
