@@ -21,6 +21,9 @@ class OpenSkyMapApp:
         self.overlay_initialized = False
         self.page_loaded = False
 
+        self.displayed_transcripts = []  # Track displayed transcripts
+        self.max_displayed_transcripts = 5  # Show last 5 transcripts
+
     def run(self):
         """Run the application"""
         # Create window with the OpenSky map URL
@@ -273,6 +276,29 @@ class OpenSkyMapApp:
                 };
             };
 
+            // Initialize empty transcript container
+            const transcriptContainer = document.createElement('div');
+            transcriptContainer.id = 'atc-transcript-container';
+            transcriptContainer.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                left: 20px;
+                right: 20px;
+                max-width: 800px;
+                margin: 0 auto;
+                background: rgba(0, 0, 0, 0.85);
+                color: white;
+                padding: 15px 20px;
+                border-radius: 8px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                z-index: 9999;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                display: none; // Hidden until first transcript
+            `;
+            transcriptContainer.innerHTML = '<div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>';
+            document.body.appendChild(transcriptContainer);
+    
             return true;
         })();
         """
@@ -339,26 +365,158 @@ class OpenSkyMapApp:
                 error(f"Error processing update: {e}")
 
     def add_transmission(self, data):
-        """Add transmission to map"""
+        """Add transmission to map and display transcript"""
         if not self.window or not self.overlay_initialized:
             return
 
         # Update transmission count
-        js_code = """
-        (function() {
+        self.transmission_count += 1
+        transcript = data.get('transcript', 'No transcript')
+        timestamp = datetime.now().strftime('%H:%M:%S')
+
+        # Update counter in info panel
+        js_update_counter = f"""
+        (function() {{
             const el = document.getElementById('atc-transmission-count');
-            if (el) {
-                const current = parseInt(el.textContent) || 0;
-                el.textContent = current + 1;
-            }
+            if (el) {{
+                el.textContent = {self.transmission_count};
+            }}
             return true;
-        })();
+        }})();
+        """
+        self.window.evaluate_js(js_update_counter)
+
+        # Add transcript to display
+        self.displayed_transcripts.append({
+            'id': f'transcript-{self.transmission_count}',
+            'text': transcript,
+            'timestamp': timestamp
+        })
+
+        # Keep only the last N transcripts
+        if len(self.displayed_transcripts) > self.max_displayed_transcripts:
+            self.displayed_transcripts.pop(0)
+
+        # Update transcript display
+        self.update_transcript_display()
+
+        info(f"Transmission #{self.transmission_count}: {transcript[:50]}...")
+
+    def update_transcript_display(self):
+        """Update the transcript display overlay"""
+        if not self.window:
+            return
+
+        # Show container if it was hidden
+        if len(self.displayed_transcripts) == 1:
+            show_container_js = """
+            (function() {
+                const container = document.getElementById('atc-transcript-container');
+                if (container) {
+                    container.style.display = 'block';
+                }
+            })();
+            """
+            self.window.evaluate_js(show_container_js)
+
+        # Build HTML for all transcripts
+        transcript_html = ""
+        for i, trans in enumerate(self.displayed_transcripts):
+            opacity = 0.4 + (0.6 * (i + 1) / len(self.displayed_transcripts))  # Older = more transparent
+            transcript_html += f"""
+            <div class="transcript-item" style="opacity: {opacity}; margin-bottom: 8px;">
+                <span style="color: #888; font-size: 11px;">[{trans['timestamp']}]</span>
+                <span style="color: #fff; font-size: 13px;">{trans['text'][:150]}{'...' if len(trans['text']) > 150 else ''}</span>
+            </div>
+            """
+
+        js_code = f"""
+        (function() {{
+            // Create or update transcript container
+            let container = document.getElementById('atc-transcript-container');
+            if (!container) {{
+                container = document.createElement('div');
+                container.id = 'atc-transcript-container';
+                container.style.cssText = `
+                    position: fixed;
+                    bottom: 20px;
+                    left: 20px;
+                    right: 20px;
+                    max-width: 800px;
+                    margin: 0 auto;
+                    background: rgba(0, 0, 0, 0.85);
+                    color: white;
+                    padding: 15px 20px;
+                    border-radius: 8px;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    z-index: 9999;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    max-height: 200px;
+                    overflow-y: auto;
+                `;
+                document.body.appendChild(container);
+            }}
+
+            // Update content with animation for new items
+            const newContent = `{transcript_html}`;
+            const isNewTransmission = container.innerHTML !== newContent;
+
+            container.innerHTML = newContent;
+
+            // Animate new transmission
+            if (isNewTransmission && container.lastElementChild) {{
+                container.lastElementChild.style.animation = 'fadeInUp 0.5s ease-out';
+            }}
+
+            // Add animation styles if not already present
+            if (!document.getElementById('atc-animations')) {{
+                const style = document.createElement('style');
+                style.id = 'atc-animations';
+                style.textContent = `
+                    @keyframes fadeInUp {{
+                        from {{
+                            opacity: 0;
+                            transform: translateY(20px);
+                        }}
+                        to {{
+                            opacity: 1;
+                            transform: translateY(0);
+                        }}
+                    }}
+
+                    #atc-transcript-container::-webkit-scrollbar {{
+                        width: 6px;
+                    }}
+
+                    #atc-transcript-container::-webkit-scrollbar-track {{
+                        background: rgba(255, 255, 255, 0.1);
+                        border-radius: 3px;
+                    }}
+
+                    #atc-transcript-container::-webkit-scrollbar-thumb {{
+                        background: rgba(255, 255, 255, 0.3);
+                        border-radius: 3px;
+                    }}
+
+                    #atc-transcript-container::-webkit-scrollbar-thumb:hover {{
+                        background: rgba(255, 255, 255, 0.5);
+                    }}
+                `;
+                document.head.appendChild(style);
+            }}
+
+            // Auto-scroll to bottom
+            container.scrollTop = container.scrollHeight;
+
+            return true;
+        }})();
         """
 
-        self.window.evaluate_js(js_code)
-
-        self.transmission_count += 1
-        info(f"Transmission #{self.transmission_count}: {data.get('transcript', 'No transcript')[:50]}...")
+        try:
+            self.window.evaluate_js(js_code)
+        except Exception as e:
+            error(f"Error updating transcript display: {e}")
 
     def stop(self):
         """Stop the application"""

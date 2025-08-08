@@ -100,6 +100,16 @@ class ATCMonitor:
                     if result and result.get('text', '').strip():
                         transcript_text = result['text'].strip()
                         info(f"Transcript: \"{transcript_text}\"", emoji="🗣️")
+
+                        # Send to GUI before saving/analyzing
+                        if self.gui_queue:
+                            self.gui_queue.put(("atc_transmission", {
+                                'transcript': transcript_text,
+                                'timestamp': datetime.now().isoformat(),
+                                'audio_file': audio_file,
+                                'transcription_number': self.stats['transmissions_transcribed']
+                            }))
+
                         transcript_file = self.save_transcript(audio_file, result)
                         analysis = analyze_transcript(transcript_file)
                         self.process_analysis(analysis, transcript_text)
