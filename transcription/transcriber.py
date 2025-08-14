@@ -19,6 +19,7 @@ try:
 except ImportError:
     ADVANCED_AUDIO_PROCESSING_AVAILABLE = False
 
+
 from utils.console_logger import info, success, error, ProgressBar, warning
 from utils.config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
@@ -250,7 +251,7 @@ class GPUWhisperTranscriber:
         start_time = datetime.now()
 
         # MODIFIED: Greatly enhanced initial prompt and tuned parameters for accuracy
-        atc_prompt = (
+        RADIO_INITIAL_PROMPT = (
             "U.S. air traffic control radio communication. This transcript contains standard ATC phraseology, "
             "aircraft callsigns (e.g., 'November one two three alpha bravo', 'United one two three'), and the phonetic alphabet "
             "(Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliett, Kilo, Lima, Mike, November, Oscar, "
@@ -273,8 +274,7 @@ class GPUWhisperTranscriber:
             "log_prob_threshold": -0.8,  # Filter out low-confidence (likely garbage) segments
             "no_speech_threshold": 0.4,  # More sensitive to faint speech than the default (0.6)
             "word_timestamps": True,
-            "initial_prompt": atc_prompt
-
+            "initial_prompt": RADIO_INITIAL_PROMPT,
         }
         if options:
             transcribe_options.update(options)
