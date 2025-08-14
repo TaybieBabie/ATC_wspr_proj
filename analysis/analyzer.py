@@ -2,11 +2,16 @@
 import json
 import os
 import re
+from dataclasses import asdict
+from datetime import datetime
+
 import pandas as pd
+
 from utils.config import TRANSCRIPT_DIR, ANALYSIS_DIR
+from utils.atc_utils import CALLSIGN_REGEX
+from .transmission import Transmission
 
 # ATC communication patterns
-CALLSIGN_PATTERN = r'([A-Z]{3}\d{1,4}|N\d{1,5}[A-Z]{0,2})'
 ALTITUDE_PATTERN = r'(\d{1,3},?\d{3})\s*(?:feet|ft)'
 HEADING_PATTERN = r'heading\s+(\d{1,3})'
 FREQUENCY_PATTERN = r'(\d{3}\.\d{1,3})'
@@ -15,9 +20,9 @@ FREQUENCY_PATTERN = r'(\d{3}\.\d{1,3})'
 def extract_atc_info(text):
     """Extract ATC-specific information from transcript"""
     info = {
-        'callsigns': re.findall(CALLSIGN_PATTERN, text.upper()),
-        'altitudes': re.findall(ALTITUDE_PATTERN, text),
-        'headings': re.findall(HEADING_PATTERN, text),
+        'callsigns': CALLSIGN_REGEX.findall(text.upper()),
+        'altitudes': [int(a.replace(',', '')) for a in re.findall(ALTITUDE_PATTERN, text)],
+        'headings': [int(h) for h in re.findall(HEADING_PATTERN, text)],
         'frequencies': re.findall(FREQUENCY_PATTERN, text)
     }
     return info
@@ -35,25 +40,27 @@ def analyze_transcript(transcript_file):
     atc_info = extract_atc_info(full_text)
 
     # Create segment-level analysis
+    transmissions: list[Transmission] = []
     segment_data = []
     for segment in segments:
         segment_text = segment['text']
         segment_info = extract_atc_info(segment_text)
-        segment_data.append({
-            'start': segment['start'],
-            'end': segment['end'],
-            'text': segment_text,
-            'callsigns': segment_info['callsigns'],
-            'altitudes': segment_info['altitudes'],
-            'headings': segment_info['headings'],
-            'frequencies': segment_info['frequencies']
-        })
+        transmission = Transmission(
+            timestamp=datetime.fromtimestamp(segment['start']),
+            text=segment_text,
+            callsigns=segment_info['callsigns'],
+            altitudes=segment_info['altitudes'],
+            headings=segment_info['headings'],
+            frequencies=segment_info['frequencies']
+        )
+        transmissions.append(transmission)
+        segment_data.append(asdict(transmission))
 
     return {
         'full_text': full_text,
         'overall_info': atc_info,
         'segments': segment_data
-    }
+    }, transmissions
 
 
 def batch_analyze(directory=TRANSCRIPT_DIR):
@@ -65,7 +72,7 @@ def batch_analyze(directory=TRANSCRIPT_DIR):
     for file in os.listdir(directory):
         if file.endswith("_transcript.json"):
             transcript_path = os.path.join(directory, file)
-            analysis = analyze_transcript(transcript_path)
+            analysis, _ = analyze_transcript(transcript_path)
 
             # Save individual analysis
             analysis_file = os.path.join(ANALYSIS_DIR, file.replace('_transcript.json', '_analysis.json'))
