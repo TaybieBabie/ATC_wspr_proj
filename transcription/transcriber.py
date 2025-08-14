@@ -10,6 +10,15 @@ import psutil  # For CPU monitoring
 from tqdm import tqdm  # For progress bars
 import re
 
+# NEW: Added imports for more advanced audio processing
+try:
+    import noisereduce as nr
+    from scipy import signal
+
+    ADVANCED_AUDIO_PROCESSING_AVAILABLE = True
+except ImportError:
+    ADVANCED_AUDIO_PROCESSING_AVAILABLE = False
+
 from utils.console_logger import info, success, error, ProgressBar, warning
 from utils.config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
@@ -92,6 +101,7 @@ class GPUWhisperTranscriber:
 
             if self.model:
                 self.current_backend = backend
+                # MODIFIED: setup_radio_optimization is now called here
                 if self.optimize_for_radio:
                     self.setup_radio_optimization()
                 return True
@@ -107,58 +117,27 @@ class GPUWhisperTranscriber:
         from faster_whisper import WhisperModel
 
         if backend == 'cuda':
-            # NVIDIA GPU with CUDA
             compute_type = get_compute_type(backend)
             info(f"Using faster-whisper with CUDA, compute type: {compute_type}", emoji="🚀")
-
-            self.model = WhisperModel(
-                self.model_size,
-                device="cuda",
-                compute_type=compute_type
-            )
+            self.model = WhisperModel(self.model_size, device="cuda", compute_type=compute_type)
 
         elif backend == 'directml':
-            # AMD GPU with DirectML through ONNX Runtime
             info(f"Using faster-whisper with DirectML (ONNX Runtime)", emoji="🚀")
-
-            # Check if ONNX Runtime with DirectML is available
             if not self.capabilities.get('directml_onnx_available', False):
                 raise Exception("ONNX Runtime with DirectML is not available")
 
-            # Configure for DirectML
             selected_device = 0
             if self.capabilities.get('directml_devices', 0) > 1:
-                info("Multiple AMD GPUs detected")
-                gpu_info = get_amd_gpu_info()
-                for i, gpu in enumerate(gpu_info):
-                    info(f"  {i}: {gpu['name']}")
-                # For automated setup, just use first GPU
-                selected_device = 0
-                info(f"Using GPU {selected_device}")
-
-            # Set environment variable for DirectML device
+                info("Multiple AMD GPUs detected, using device 0.")
             os.environ["DML_DEVICE_ID"] = str(selected_device)
 
-            # Create model with CPU device (faster-whisper will use ONNX Runtime with DirectML internally)
-            self.model = WhisperModel(
-                self.model_size,
-                device="cpu",  # Must be CPU for DirectML
-                compute_type="int8",  # DirectML works best with int8
-                device_index=0  # This is for CPU, not GPU
-            )
-
+            self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
             success("faster-whisper loaded with DirectML backend", emoji="✅")
 
-        else:
-            # CPU
+        else:  # CPU
             compute_type = get_compute_type(backend)
             info(f"Using faster-whisper with CPU, compute type: {compute_type}", emoji="🚀")
-
-            self.model = WhisperModel(
-                self.model_size,
-                device="cpu",
-                compute_type=compute_type
-            )
+            self.model = WhisperModel(self.model_size, device="cpu", compute_type=compute_type)
 
         self.whisper_type = "faster-whisper"
 
@@ -169,68 +148,97 @@ class GPUWhisperTranscriber:
             info(f"Using standard whisper with device: {device}")
             self.model = whisper.load_model(self.model_size, device=device)
         else:
-            # CPU
             info("Using standard whisper with CPU")
             self.model = whisper.load_model(self.model_size, device='cpu')
 
         self.whisper_type = "standard-whisper"
 
+    # MODIFIED: Updated setup to reflect new capabilities
     def setup_radio_optimization(self):
         """Setup audio preprocessing optimizations for radio communications"""
-        info("Radio optimization enabled - better performance for ATC audio", emoji="📻")
-        self.radio_opts = {'noise_reduction': True, 'frequency_boost': True, 'normalize': True}
+        info("Radio optimization enabled - using advanced audio filtering for ATC.", emoji="📻")
+        if not ADVANCED_AUDIO_PROCESSING_AVAILABLE:
+            warning("`noisereduce` or `scipy` not found. Audio filtering will be limited.")
+            warning("For best results, run: pip install noisereduce scipy")
 
+    # MODIFIED: Replaced with a multi-stage, more effective pipeline
     def preprocess_audio(self, audio_path):
-        """Preprocess audio for better radio transcription"""
+        """Preprocess audio for better radio transcription using a multi-stage pipeline."""
         try:
             audio, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
-            if self.optimize_for_radio and hasattr(self, 'radio_opts'):
-                if self.radio_opts.get('noise_reduction'):
-                    audio = self.reduce_noise(audio, sr)
-                if self.radio_opts.get('frequency_boost'):
-                    audio = self.radio_filter(audio, sr)
-                if self.radio_opts.get('normalize'):
-                    audio = librosa.util.normalize(audio)
 
-            # Ensure audio is float32 and contiguous
+            if self.optimize_for_radio:
+                # 1. High-pass filter to remove low-frequency rumble
+                audio = self.high_pass_filter(audio, cutoff_freq=250, sample_rate=sr)
+
+                # 2. Spectral noise reduction to remove static and background noise
+                audio = self.reduce_noise_spectral(audio, sample_rate=sr)
+
+                # 3. Band-pass filter to isolate the voice frequency range
+                audio = self.radio_filter(audio, sample_rate=sr)
+
+                # 4. Normalize audio volume
+                audio = librosa.util.normalize(audio)
+
             if audio.dtype != np.float32:
                 audio = audio.astype(np.float32)
-            audio = np.ascontiguousarray(audio)
 
-            return audio
+            return np.ascontiguousarray(audio)
+
         except Exception as e:
             error(f"Error preprocessing audio {audio_path}: {e}")
             audio, _ = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
             return audio
 
-    def reduce_noise(self, audio, sample_rate):
-        """Simple noise reduction using spectral gating"""
+    # NEW: Helper function for spectral noise reduction
+    def reduce_noise_spectral(self, audio, sample_rate):
+        """Reduce noise using spectral gating. Requires `noisereduce`."""
+        if not ADVANCED_AUDIO_PROCESSING_AVAILABLE:
+            return audio
         try:
-            return librosa.effects.preemphasis(audio)
-        except:
+            return nr.reduce_noise(y=audio, sr=sample_rate, prop_decrease=0.95, stationary=False)
+        except Exception as e:
+            warning(f"Could not apply spectral noise reduction: {e}")
             return audio
 
-    def radio_filter(self, audio, sample_rate):
-        """Apply radio-like frequency filtering"""
+    # NEW: Helper function for high-pass filtering
+    def high_pass_filter(self, audio, cutoff_freq, sample_rate):
+        """Apply a high-pass filter to remove low-frequency noise."""
+        if not ADVANCED_AUDIO_PROCESSING_AVAILABLE:
+            return audio
         try:
-            from scipy import signal
-            nyquist = sample_rate * 0.5
-            low = 300 / nyquist
-            high = 3400 / nyquist
-            b, a = signal.butter(4, [low, high], btype='band')
+            nyquist = 0.5 * sample_rate
+            norm_cutoff = cutoff_freq / nyquist
+            b, a = signal.butter(6, norm_cutoff, btype='high', analog=False)
             return signal.filtfilt(b, a, audio)
-        except:
+        except Exception as e:
+            warning(f"Could not apply high-pass filter: {e}")
+            return audio
+
+    # MODIFIED: Updated band-pass filter with slightly different parameters
+    def radio_filter(self, audio, sample_rate):
+        """Apply a band-pass filter to isolate voice frequencies."""
+        if not ADVANCED_AUDIO_PROCESSING_AVAILABLE:
+            return audio
+        try:
+            lowcut = 250.0
+            highcut = 3800.0
+            nyquist = 0.5 * sample_rate
+            low = lowcut / nyquist
+            high = highcut / nyquist
+            b, a = signal.butter(6, [low, high], btype='band')
+            return signal.filtfilt(b, a, audio)
+        except Exception as e:
+            warning(f"Could not apply radio band-pass filter: {e}")
             return audio
 
     def transcribe_audio_with_progress(self, audio_file, options=None):
         """Transcribe audio with progress monitoring"""
         if not self.model:
             self.load_model()
-
         if not self.model:
             error("Cannot transcribe, model failed to load.")
             return None
-
         return self.transcribe_audio_internal(audio_file, options)
 
     def transcribe_audio_internal(self, audio_file, options=None):
@@ -240,40 +248,66 @@ class GPUWhisperTranscriber:
             return None
 
         start_time = datetime.now()
-        default_options = {
+
+        # MODIFIED: Greatly enhanced initial prompt and tuned parameters for accuracy
+        RADIO_INITIAL_PROMPT = (
+            "U.S. air traffic control radio communication. This transcript contains standard ATC phraseology, "
+            "aircraft callsigns (e.g., 'November one two three alpha bravo', 'United one two three'), and the phonetic alphabet "
+            "(Alpha, Bravo, Charlie, Delta, Echo, Foxtrot, Golf, Hotel, India, Juliett, Kilo, Lima, Mike, November, Oscar, "
+            "Papa, Quebec, Romeo, Sierra, Tango, Uniform, Victor, Whiskey, X-ray, Yankee, Zulu). "
+            "Numbers are spoken digit by digit, such as 'one two one point five' for 121.5, or 'niner' for the digit 9. "
+            "Common terms include: squawk, runway, taxiway, takeoff, landing, wind, traffic, roger, wilco, approach, departure, "
+            "vector, hold short, descend, climb, maintain, flight level, heading, cleared, contact, tower, ground. "
+            "Altitudes are in feet, speeds in knots, and distances in nautical miles."
+        )
+
+        # MODIFIED: Tuned parameters for higher accuracy on noisy, specific-domain audio
+        transcribe_options = {
             "language": "en",
             "task": "transcribe",
             "temperature": 0.0,
-            "best_of": 5,
-            "beam_size": 5,
+            "beam_size": 7,  # Increased from 5 for more thorough searching
+            "best_of": 7,  # Match beam_size when temp is 0
+            "patience": 1.0,  # Added to help with challenging audio
+            "suppress_tokens": [-1],  # Suppress tokens that are often errors/hallucinations
+            "log_prob_threshold": -0.8,  # Filter out low-confidence (likely garbage) segments
+            "no_speech_threshold": 0.4,  # More sensitive to faint speech than the default (0.6)
             "word_timestamps": True,
             "initial_prompt": RADIO_INITIAL_PROMPT,
         }
         if options:
-            default_options.update(options)
+            transcribe_options.update(options)
 
         try:
             audio = self.preprocess_audio(audio_file)
 
             if self.whisper_type == "faster-whisper":
-                # faster-whisper has a different API and returns a generator
+                # faster-whisper uses log_prob_threshold, not logprob_threshold
                 segments, _ = self.model.transcribe(
                     audio,
-                    language=default_options.get("language", "en"),
-                    beam_size=default_options.get("beam_size", 5),
-                    word_timestamps=default_options.get("word_timestamps", True),
-                    initial_prompt=default_options.get("initial_prompt"),
-                    temperature=default_options.get("temperature", 0.0)
+                    language=transcribe_options["language"],
+                    task=transcribe_options["task"],
+                    beam_size=transcribe_options["beam_size"],
+                    best_of=transcribe_options["best_of"],
+                    patience=transcribe_options["patience"],
+                    temperature=transcribe_options["temperature"],
+                    initial_prompt=transcribe_options["initial_prompt"],
+                    log_prob_threshold=transcribe_options["log_prob_threshold"],
+                    no_speech_threshold=transcribe_options["no_speech_threshold"],
+                    word_timestamps=transcribe_options["word_timestamps"],
+                    suppress_tokens=transcribe_options["suppress_tokens"]
                 )
 
                 # Reconstruct the result object to match the standard whisper format
                 text_segments = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
                 text_segments = self._clean_segments(text_segments)
                 text = ' '.join([seg['text'].strip() for seg in text_segments])
-
+                
             else:
-                # Standard whisper
-                result = self.model.transcribe(audio, **default_options)
+                # Standard whisper uses logprob_threshold (no underscore)
+                standard_whisper_options = transcribe_options.copy()
+                standard_whisper_options["logprob_threshold"] = standard_whisper_options.pop("log_prob_threshold")
+                result = self.model.transcribe(audio, **standard_whisper_options)
                 text = result.get("text", "")
                 text_segments = self._clean_segments(result.get("segments", []))
 
@@ -286,11 +320,10 @@ class GPUWhisperTranscriber:
                     "model_size": self.model_size, "backend": self.current_backend,
                     "whisper_type": self.whisper_type, "processing_time": processing_time,
                     "audio_file": os.path.basename(audio_file), "timestamp": datetime.now().isoformat(),
-                    "options": default_options
+                    "options": transcribe_options
                 }
             }
 
-            # Clear GPU memory if using GPU
             if self.current_backend == 'cuda' and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
@@ -320,8 +353,10 @@ class GPUWhisperTranscriber:
         """Post-process text for radio communications"""
         if not text:
             return ""
+
         text = text.replace(RADIO_INITIAL_PROMPT, "")
         text = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
+
         return text.strip()
 
 
@@ -346,12 +381,10 @@ def transcribe_audio(audio_file, save_transcript=True, show_progress=True):
     transcriber = get_transcriber()
     if not transcriber.model:
         transcriber.load_model()
-
     if not transcriber.model:
         error(f"Skipping transcription for {audio_file} because model is not available.")
         return None
 
-    # Simplified call for clarity
     result = transcriber.transcribe_audio_internal(audio_file)
 
     if result and save_transcript:
