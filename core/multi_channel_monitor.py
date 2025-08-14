@@ -15,9 +15,15 @@ from analysis.analyzer import analyze_transcript
 from tracking.adsb_tracker import ADSBTracker, OpenSkySource
 from analysis.correlator import ATCCorrelator
 from utils.console_logger import info, success, warning, error, section
-from utils.config import (VAD_THRESHOLD, SILENCE_DURATION, AUDIO_DIR,
-                          OPENSKY_USERNAME, OPENSKY_PASSWORD, ENABLE_ADSB,
-                          ADSB_SOURCE, MODEL_SIZE)
+from utils.config import (
+    VAD_THRESHOLD,
+    SILENCE_DURATION,
+    AUDIO_DIR,
+    OPENSKY_CREDENTIALS_FILE,
+    ENABLE_ADSB,
+    ADSB_SOURCE,
+    MODEL_SIZE,
+)
 
 
 class TranscriptionWorkerPool:
@@ -194,7 +200,7 @@ class MultiChannelATCMonitor:
         self.enable_adsb = ENABLE_ADSB
         if self.enable_adsb:
             if ADSB_SOURCE == 'opensky':
-                source = OpenSkySource(OPENSKY_USERNAME, OPENSKY_PASSWORD)
+                source = OpenSkySource(OPENSKY_CREDENTIALS_FILE)
             else:
                 source = OpenSkySource()
             self.adsb_tracker = ADSBTracker(source)
@@ -379,7 +385,7 @@ class MultiChannelATCMonitor:
     def adsb_update_worker(self):
         """Background thread to update ADS-B data"""
         info("ADS-B updater thread started", emoji="📡")
-        update_interval = 10 if not (OPENSKY_USERNAME and OPENSKY_PASSWORD) else 5
+        update_interval = 5 if getattr(self.adsb_tracker.data_source, "credentials", None) else 10
 
         while self.is_monitoring:
             try:

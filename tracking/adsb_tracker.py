@@ -6,8 +6,12 @@ from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional
 import math
-from utils.config import (AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM,
-                    OPENSKY_USERNAME, OPENSKY_PASSWORD)
+from utils.config import (
+    AIRPORT_LAT,
+    AIRPORT_LON,
+    SEARCH_RADIUS_NM,
+    OPENSKY_CREDENTIALS_FILE,
+)
 
 
 class Aircraft:
@@ -94,11 +98,49 @@ class ADSBDataSource(ABC):
 class OpenSkySource(ADSBDataSource):
     """OpenSky Network API data source"""
 
-    def __init__(self, username: str = None, password: str = None):
+    def __init__(self, credentials_file: str = None):
         self.base_url = "https://opensky-network.org/api"
-        self.auth = (username, password) if username and password else None
+        self.token_url = (
+            "https://auth.opensky-network.org/auth/realms/opensky-network/"
+            "protocol/openid-connect/token"
+        )
+        self.credentials = None
+        self.token = None
+        self.token_expiry = 0
+        if credentials_file:
+            try:
+                with open(credentials_file, "r") as f:
+                    self.credentials = json.load(f)
+            except FileNotFoundError:
+                print(f"OpenSky credentials file not found: {credentials_file}")
         self.last_request_time = 0
-        self.rate_limit = 5 if self.auth else 10  # seconds between requests
+        self.rate_limit = 5 if self.credentials else 10  # seconds between requests
+
+    def _get_access_token(self) -> Optional[str]:
+        """Retrieve or refresh OAuth2 token"""
+        if not self.credentials:
+            return None
+        if self.token and time.time() < self.token_expiry - 60:
+            return self.token
+        try:
+            resp = requests.post(
+                self.token_url,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.credentials.get("client_id", ""),
+                    "client_secret": self.credentials.get("client_secret", ""),
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self.token = data.get("access_token")
+            self.token_expiry = time.time() + data.get("expires_in", 0)
+            return self.token
+        except requests.RequestException as e:
+            print(f"Error obtaining OpenSky token: {e}")
+            return None
 
     def get_aircraft_in_area(self, lat: float, lon: float,
                              radius_nm: float) -> List[Aircraft]:
@@ -119,10 +161,14 @@ class OpenSkySource(ADSBDataSource):
         }
 
         try:
+            headers = {}
+            token = self._get_access_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             response = requests.get(
                 f"{self.base_url}/states/all",
                 params=params,
-                auth=self.auth,
+                headers=headers,
                 timeout=15
             )
             self.last_request_time = time.time()
@@ -215,7 +261,7 @@ class ADSBTracker:
 
     def __init__(self, data_source: ADSBDataSource = None):
         self.data_source = data_source or OpenSkySource(
-            OPENSKY_USERNAME, OPENSKY_PASSWORD
+            OPENSKY_CREDENTIALS_FILE
         )
         self.aircraft_history = {}
         self.current_aircraft = {}
