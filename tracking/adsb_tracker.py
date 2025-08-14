@@ -110,9 +110,26 @@ class OpenSkySource(ADSBDataSource):
         if credentials_file:
             try:
                 with open(credentials_file, "r") as f:
-                    self.credentials = json.load(f)
+                    creds = json.load(f)
+                client_id = creds.get("client_id") or creds.get("clientId")
+                client_secret = (
+                    creds.get("client_secret") or creds.get("clientSecret")
+                )
+                if not client_id or not client_secret:
+                    raise ValueError(
+                        "OpenSky credentials must include non-empty "
+                        "'client_id'/'clientId' and 'client_secret'/'clientSecret'"
+                    )
+                self.credentials = {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                }
+                if "scope" in creds:
+                    self.credentials["scope"] = creds["scope"]
             except FileNotFoundError:
-                print(f"OpenSky credentials file not found: {credentials_file}")
+                print(
+                    f"OpenSky credentials file not found: {credentials_file}"
+                )
         self.last_request_time = 0
         self.rate_limit = 5 if self.credentials else 10  # seconds between requests
 
@@ -122,18 +139,56 @@ class OpenSkySource(ADSBDataSource):
             return None
         if self.token and time.time() < self.token_expiry - 60:
             return self.token
+
+        client_id = self.credentials.get("client_id", "")
+        client_secret = self.credentials.get("client_secret", "")
+        scope = self.credentials.get("scope")
+
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+        if scope:
+            data["scope"] = scope
+
         try:
             resp = requests.post(
                 self.token_url,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self.credentials.get("client_id", ""),
-                    "client_secret": self.credentials.get("client_secret", ""),
-                },
+                data=data,
                 timeout=10,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError as http_err:
+                if resp.status_code == 400:
+                    fallback_data = {"grant_type": "client_credentials"}
+                    if scope:
+                        fallback_data["scope"] = scope
+                    try:
+                        resp = requests.post(
+                            self.token_url,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            data=fallback_data,
+                            auth=(client_id, client_secret),
+                            timeout=10,
+                        )
+                        resp.raise_for_status()
+                    except requests.HTTPError as http_err2:
+                        print(
+                            f"Error obtaining OpenSky token: {http_err2} - {resp.text}"
+                        )
+                        return None
+                    except requests.RequestException as e2:
+                        print(f"Error obtaining OpenSky token: {e2}")
+                        return None
+                else:
+                    print(
+                        f"Error obtaining OpenSky token: {http_err} - {resp.text}"
+                    )
+                    return None
+
             data = resp.json()
             self.token = data.get("access_token")
             self.token_expiry = time.time() + data.get("expires_in", 0)
