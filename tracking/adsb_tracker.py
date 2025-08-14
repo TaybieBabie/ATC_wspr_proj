@@ -110,9 +110,26 @@ class OpenSkySource(ADSBDataSource):
         if credentials_file:
             try:
                 with open(credentials_file, "r") as f:
-                    self.credentials = json.load(f)
+                    creds = json.load(f)
+                client_id = creds.get("client_id") or creds.get("clientId")
+                client_secret = (
+                    creds.get("client_secret") or creds.get("clientSecret")
+                )
+                if not client_id or not client_secret:
+                    raise ValueError(
+                        "OpenSky credentials must include non-empty "
+                        "'client_id'/'clientId' and 'client_secret'/'clientSecret'"
+                    )
+                self.credentials = {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                }
+                if "scope" in creds:
+                    self.credentials["scope"] = creds["scope"]
             except FileNotFoundError:
-                print(f"OpenSky credentials file not found: {credentials_file}")
+                print(
+                    f"OpenSky credentials file not found: {credentials_file}"
+                )
         self.last_request_time = 0
         self.rate_limit = 5 if self.credentials else 10  # seconds between requests
 
