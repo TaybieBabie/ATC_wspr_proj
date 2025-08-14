@@ -8,6 +8,7 @@ import librosa
 import gc
 import psutil  # For CPU monitoring
 from tqdm import tqdm  # For progress bars
+import re
 
 # NEW: Added imports for more advanced audio processing
 try:
@@ -23,6 +24,11 @@ from utils.config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WH
     PREFER_ONNX_DIRECTML
 from utils.gpu_utils import setup_gpu_backend, get_device_string, get_torch_device, get_compute_type, print_gpu_info, \
     get_directml_provider_options, get_amd_gpu_info, TORCH_DIRECTML_AVAILABLE, ONNX_RUNTIME_AVAILABLE
+
+
+RADIO_INITIAL_PROMPT = (
+    "U.S. air traffic control radio communication. All units are in feet, knots, and nautical miles."
+)
 
 
 class GPUWhisperTranscriber:
@@ -268,6 +274,7 @@ class GPUWhisperTranscriber:
             "no_speech_threshold": 0.4,  # More sensitive to faint speech than the default (0.6)
             "word_timestamps": True,
             "initial_prompt": atc_prompt
+
         }
         if options:
             transcribe_options.update(options)
@@ -291,15 +298,19 @@ class GPUWhisperTranscriber:
                     word_timestamps=transcribe_options["word_timestamps"],
                     suppress_tokens=transcribe_options["suppress_tokens"]
                 )
-                text_segments = [{'start': s.start, 'end': s.end, 'text': s.text} for s in segments]
+
+                # Reconstruct the result object to match the standard whisper format
+                text_segments = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+                text_segments = self._clean_segments(text_segments)
                 text = ' '.join([seg['text'].strip() for seg in text_segments])
+                
             else:
                 # Standard whisper uses logprob_threshold (no underscore)
                 standard_whisper_options = transcribe_options.copy()
                 standard_whisper_options["logprob_threshold"] = standard_whisper_options.pop("log_prob_threshold")
                 result = self.model.transcribe(audio, **standard_whisper_options)
                 text = result.get("text", "")
-                text_segments = result.get("segments", [])
+                text_segments = self._clean_segments(result.get("segments", []))
 
             processing_time = (datetime.now() - start_time).total_seconds()
             text = self.post_process_text(text)
@@ -326,10 +337,27 @@ class GPUWhisperTranscriber:
             traceback.print_exc()
             return None
 
+    def _clean_segments(self, segments):
+        """Remove boilerplate prompts and collapse repeated segments."""
+        cleaned = []
+        prev_text = None
+        for seg in segments:
+            text = seg.get("text", "").strip()
+            if not text or text == RADIO_INITIAL_PROMPT:
+                continue
+            if prev_text is None or text.lower() != prev_text.lower():
+                cleaned.append({**seg, "text": text})
+                prev_text = text
+        return cleaned
+
     def post_process_text(self, text):
         """Post-process text for radio communications"""
         if not text:
             return ""
+
+        text = text.replace(RADIO_INITIAL_PROMPT, "")
+        text = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
+
         return text.strip()
 
 
