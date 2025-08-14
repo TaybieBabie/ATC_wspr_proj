@@ -353,7 +353,6 @@ class GPUWhisperTranscriber:
         """Post-process text for radio communications"""
         if not text:
             return ""
-
         text = text.replace(RADIO_INITIAL_PROMPT, "")
         text = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
 
