@@ -86,13 +86,17 @@ class OpenSkyMapApp:
         channels_html = ""
         for config in self.atc_monitor.channel_configs:
             freq = config['frequency']
+            freq_id = freq.replace('.', '_')
             color = config.get('color', '#FFFFFF')
+            stream_url = config.get('stream_url', '')
             channels_html += f"""
-            <div class="channel-item" style="margin-bottom: 8px; padding: 5px; border-left: 3px solid {color};">
-                <div style="font-weight: bold; font-size: 12px;">{config['name']}</div>
-                <div style="font-size: 11px; color: #888;">
-                    {freq} MHz - 
-                    <span id="channel-count-{freq.replace('.', '_')}" style="color: {color};">0</span> transmissions
+            <div class=\"channel-item\" style=\"margin-bottom: 8px; padding: 5px; border-left: 3px solid {color};\">
+                <div style=\"font-weight: bold; font-size: 12px;\">{config['name']}</div>
+                <div style=\"font-size: 11px; color: #888;\">
+                    {freq} MHz -
+                    <span id=\"channel-count-{freq_id}\" style=\"color: {color};\">0</span> transmissions
+                    <button id=\"mute-{freq_id}\" class=\"mute-btn\" onclick=\"toggleMute('{freq_id}')\">Unmute</button>
+                    <audio id=\"audio-{freq_id}\" data-stream=\"{stream_url}\" preload=\"none\" style=\"display:none;\"></audio>
                 </div>
             </div>
             """
@@ -170,6 +174,29 @@ class OpenSkyMapApp:
 
             document.body.appendChild(panel);
 
+            // Toggle audio playback for a channel without affecting recording
+            window.toggleMute = function(freqId) {{
+                const audioEl = document.getElementById('audio-' + freqId);
+                const btnEl = document.getElementById('mute-' + freqId);
+                if (!audioEl || !btnEl) {{
+                    return;
+                }}
+                if (audioEl.paused) {{
+                    const streamUrl = audioEl.getAttribute('data-stream');
+                    if (audioEl.src !== streamUrl) {{
+                        audioEl.src = streamUrl;
+                        audioEl.load();
+                    }}
+                    audioEl.play();
+                    btnEl.textContent = 'Mute';
+                }} else {{
+                    audioEl.pause();
+                    audioEl.removeAttribute('src');
+                    audioEl.load();
+                    btnEl.textContent = 'Unmute';
+                }}
+            }};
+
             // Create transcript display
             const transcriptContainer = document.createElement('div');
             transcriptContainer.id = 'multi-transcript-container';
@@ -215,6 +242,13 @@ class OpenSkyMapApp:
 
                 .worker-box {{
                     transition: all 0.3s ease;
+                }}
+
+                .mute-btn {{
+                    margin-left: 8px;
+                    padding: 1px 6px;
+                    font-size: 11px;
+                    cursor: pointer;
                 }}
 
                 @keyframes pulse {{

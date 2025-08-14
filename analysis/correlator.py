@@ -1,25 +1,32 @@
 #correlator.py
 import re
+from collections import deque
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
+
 from tracking.adsb_tracker import ADSBTracker, Aircraft
+from utils.atc_utils import CALLSIGN_REGEX
+from .transmission import Transmission
 
 
 class ATCCorrelator:
     """Correlates ATC transcripts with ADS-B data"""
 
-    def __init__(self, adsb_tracker: ADSBTracker):
+    def __init__(self, adsb_tracker: ADSBTracker, blacklist: Optional[List[str]] = None):
         self.adsb_tracker = adsb_tracker
         self.correlation_window = 30  # seconds to look back/forward
+        self.blacklist = set([b.upper() for b in blacklist]) if blacklist else set()
+        self.transmissions: deque[Transmission] = deque(maxlen=1000)
 
         # Patterns for extracting info from transcripts
         self.patterns = {
-            'callsign': re.compile(r'\b([A-Z]{3}[A-Z]?\d{1,4}[A-Z]?)\b'),
+            'callsign': CALLSIGN_REGEX,
             'altitude': re.compile(r'\b(\d{1,3}(?:,\d{3})?)\s*(?:feet|ft)?\b'),
             'heading': re.compile(r'\b(?:heading|turn)\s*(\d{3})\b'),
             'position': re.compile(r'\b(\d{1,2})\s*(?:miles?|nm)\s*(\w+)\b'),
             'altitude_thousands': re.compile(r'\b(?:flight level|FL|altitude)\s*(\d{2,3})\b'),
             'squawk': re.compile(r'\b(?:squawk|transponder)\s*(\d{4})\b'),
+            'frequency': re.compile(r'\b(\d{3}\.\d{1,3})\b'),
         }
 
     def extract_flight_info(self, transcript: str) -> Dict:
@@ -29,7 +36,8 @@ class ATCCorrelator:
             'altitudes': [],
             'positions': [],
             'headings': [],
-            'squawks': []
+            'squawks': [],
+            'frequencies': []
         }
 
         # Extract callsigns
@@ -62,6 +70,10 @@ class ATCCorrelator:
         # Extract squawk codes
         squawks = self.patterns['squawk'].findall(transcript)
         info['squawks'] = squawks
+
+        # Extract frequencies
+        freqs = self.patterns['frequency'].findall(transcript)
+        info['frequencies'] = freqs
 
         return info
 
@@ -146,7 +158,40 @@ class ATCCorrelator:
         if results['uncorrelated_callsigns']:
             self._analyze_uncorrelated(results)
 
+        # Build Transmission record
+        transmission = Transmission(
+            timestamp=timestamp,
+            text=transcript,
+            callsigns=flight_info['callsigns'],
+            altitudes=flight_info['altitudes'],
+            headings=flight_info['headings'],
+            frequencies=flight_info['frequencies']
+        )
+
+        if results['correlated_aircraft']:
+            transmission.aircraft = results['correlated_aircraft'][0]['aircraft']
+            transmission.confidence = 1.0
+        elif results['alerts']:
+            transmission.possible_aircraft = results['alerts'][0].get('possible_aircraft', [])
+            transmission.confidence = 0.5
+
+        # Blacklist alerts
+        for cs in flight_info['callsigns']:
+            if cs.upper() in self.blacklist:
+                results['alerts'].append({
+                    'type': 'blacklisted_callsign',
+                    'callsign': cs,
+                    'confidence': 'high'
+                })
+
+        self.transmissions.append(transmission)
+        results['transmission'] = transmission
         return results
+
+    def get_recent_transmissions(self, minutes: int = 5) -> List[Transmission]:
+        """Return transmissions within the last given minutes"""
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        return [t for t in self.transmissions if t.timestamp >= cutoff]
 
     def _extract_context(self, text: str, keyword: str,
                          context_chars: int = 100) -> str:

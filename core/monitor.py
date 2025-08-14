@@ -18,9 +18,16 @@ from analysis.analyzer import analyze_transcript
 from tracking.adsb_tracker import ADSBTracker, OpenSkySource, LocalADSBSource
 from analysis.correlator import ATCCorrelator
 from utils.console_logger import info, success, warning, error, section
-from utils.config import (ATC_FREQUENCY, LIVEATC_STREAM_URL, VAD_THRESHOLD,
-                         SILENCE_DURATION, AUDIO_DIR, OPENSKY_USERNAME, OPENSKY_PASSWORD,
-                         ENABLE_ADSB, ADSB_SOURCE)
+from utils.config import (
+    ATC_FREQUENCY,
+    LIVEATC_STREAM_URL,
+    VAD_THRESHOLD,
+    SILENCE_DURATION,
+    AUDIO_DIR,
+    OPENSKY_CREDENTIALS_FILE,
+    ENABLE_ADSB,
+    ADSB_SOURCE,
+)
 
 
 class ATCMonitor:
@@ -50,7 +57,7 @@ class ATCMonitor:
         self.enable_adsb = ENABLE_ADSB
         if self.enable_adsb:
             if ADSB_SOURCE == 'opensky':
-                source = OpenSkySource(OPENSKY_USERNAME, OPENSKY_PASSWORD)
+                source = OpenSkySource(OPENSKY_CREDENTIALS_FILE)
             elif ADSB_SOURCE == 'local':
                 source = LocalADSBSource()
             else:
@@ -68,7 +75,7 @@ class ATCMonitor:
 
         # For non-authenticated OpenSky access, we're limited to 10 seconds between requests
         # But we can make it appear smoother by interpolating positions
-        update_interval = 10 if not (OPENSKY_USERNAME and OPENSKY_PASSWORD) else 5
+        update_interval = 5 if getattr(self.adsb_tracker.data_source, "credentials", None) else 10
 
         while self.is_monitoring:
             try:
