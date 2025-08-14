@@ -19,7 +19,6 @@ try:
 except ImportError:
     ADVANCED_AUDIO_PROCESSING_AVAILABLE = False
 
-
 from utils.console_logger import info, success, error, ProgressBar, warning
 from utils.config import MODEL_SIZE, TRANSCRIPT_DIR, ENABLE_GPU, SAMPLE_RATE, WHISPER_COMPUTE_TYPE, USE_FASTER_WHISPER, \
     PREFER_ONNX_DIRECTML
