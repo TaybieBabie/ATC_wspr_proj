@@ -47,9 +47,9 @@ SEARCH_RADIUS_NM = 50  # Nautical miles radius to monitor
 ENABLE_ADSB = True
 ADSB_SOURCE = 'opensky'  # Options: 'opensky', 'adsbx', 'local'
 
-# OpenSky Network (free, requires account for better rate limits)
-OPENSKY_USERNAME = ''  # Leave empty for anonymous access
-OPENSKY_PASSWORD = ''
+# OpenSky Network OAuth2 credentials
+# Path to JSON file containing `client_id` and `client_secret`
+OPENSKY_CREDENTIALS_FILE = 'credentials.json'
 
 # ADS-B Exchange (optional, requires API key)
 ADSBX_API_KEY = ''
