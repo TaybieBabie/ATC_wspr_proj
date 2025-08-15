@@ -104,7 +104,7 @@ class OpenSkyMapApp:
                     {freq} MHz -
                     <span id=\"channel-count-{freq_id}\" style=\"color: {color};\">0</span> transmissions
                     <button id=\"mute-{freq_id}\" class=\"mute-btn\" onclick=\"toggleMute('{freq_id}')\">Unmute</button>
-                    <audio id=\"audio-{freq_id}\" src=\"{stream_url}\" preload=\"none\" style=\"display:none;\"></audio>
+                    <audio id=\"audio-{freq_id}\" data-stream=\"{stream_url}\" preload=\"none\" style=\"display:none;\"></audio>
                 </div>
             </div>
             """
@@ -190,10 +190,17 @@ class OpenSkyMapApp:
                     return;
                 }}
                 if (audioEl.paused) {{
+                    const streamUrl = audioEl.getAttribute('data-stream');
+                    if (audioEl.src !== streamUrl) {{
+                        audioEl.src = streamUrl;
+                        audioEl.load();
+                    }}
                     audioEl.play();
                     btnEl.textContent = 'Mute';
                 }} else {{
                     audioEl.pause();
+                    audioEl.removeAttribute('src');
+                    audioEl.load();
                     btnEl.textContent = 'Unmute';
                 }}
             }};
