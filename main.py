@@ -121,12 +121,13 @@ def main():
         atc_monitor = MultiChannelATCMonitor(channels, num_transcription_workers=args.workers)
 
         # Start monitoring in background thread
-        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring, daemon=True)
+        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring)
         monitor_thread.start()
 
         # Run GUI
         from gui.map_app_webview import run_webview_app
         run_webview_app(atc_monitor)
+        monitor_thread.join()
 
     elif args.monitor:
         # Original single-channel mode
@@ -134,11 +135,12 @@ def main():
         monitor_params = vars(args)
         atc_monitor = ATCMonitor(monitor_params)
 
-        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring, daemon=True)
+        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring)
         monitor_thread.start()
 
         from gui.map_app_webview import run_webview_app
         run_webview_app(atc_monitor)
+        monitor_thread.join()
 
     else:
         parser.print_help()

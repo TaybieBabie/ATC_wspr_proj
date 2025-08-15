@@ -52,6 +52,7 @@ class OpenSkyMapApp:
 
         # Set up event handlers
         self.window.events.loaded += self.on_page_loaded
+        self.window.events.closed += self.on_closed
 
         # Start update thread
         update_thread = threading.Thread(target=self.process_updates, daemon=True)
@@ -67,6 +68,13 @@ class OpenSkyMapApp:
 
         # Wait a bit for OpenLayers to initialize
         threading.Timer(5.0, self.inject_monitor).start()
+
+    def on_closed(self):
+        """Called when the webview window is closed"""
+        info("Webview window closed, shutting down monitor")
+        self.running = False
+        if self.atc_monitor:
+            self.atc_monitor.stop_monitoring()
 
     def inject_monitor(self):
         """Inject the monitoring code once"""
