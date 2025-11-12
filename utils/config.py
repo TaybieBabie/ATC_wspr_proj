@@ -11,20 +11,20 @@
 #   - 16GB GPU: MODEL_SIZE = "medium", NUM_TRANSCRIPTION_WORKERS = 3
 #   - 24GB GPU: MODEL_SIZE = "large", NUM_TRANSCRIPTION_WORKERS = 2
 #
-MODEL_SIZE = "small"  # Options: tiny, base, small, medium, large
+MODEL_SIZE = "distil-large-v3"  # Options: tiny, base, small, medium, large
 PROCESSED_DIR = "audio/processed/"
 TRANSCRIPT_DIR = "transcripts/"
 ANALYSIS_DIR = "analysis/"
 ENABLE_GPU = True
 
 # GPU Configuration
-GPU_BACKEND = "cuda"  # Options: "auto", "cuda", "directml", "cpu"
+GPU_BACKEND = "auto"  # Options: "auto", "cuda", "directml", "cpu"
 PREFER_AMD_GPU = False  # Set to True to prefer AMD over NVIDIA when both available
-DIRECTML_ENABLED = False  # Enable DirectML support for AMD GPUs
-PREFER_ONNX_DIRECTML = False  # Prefer ONNX Runtime DirectML over PyTorch DirectML
+DIRECTML_ENABLED = True  # Enable DirectML support for AMD GPUs
+PREFER_ONNX_DIRECTML = True  # Prefer ONNX Runtime DirectML over PyTorch DirectML
 
 # Performance tuning
-USE_FASTER_WHISPER = False  # Use faster-whisper library
+USE_FASTER_WHISPER = True  # Use faster-whisper library
 WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU/DirectML
 BATCH_SIZE = 1  # For batch processing
 
@@ -93,7 +93,7 @@ BATCH_SIZE = 1  # For batch processing
 # - For testing, start with 1 worker and increase gradually
 # - CPU mode: Can use more workers (4-8) but transcription is much slower
 #
-NUM_TRANSCRIPTION_WORKERS = 3  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
+NUM_TRANSCRIPTION_WORKERS = 6  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
 
 # Audio preprocessing
 OPTIMIZE_FOR_RADIO = True
@@ -109,7 +109,7 @@ AUDIO_DIR = "audio/raw/"
 ATC_FREQUENCY = "121.9"  # Your local frequency
 
 # VAD settings
-VAD_THRESHOLD = 0.2  # Adjust based on your audio levels
+VAD_THRESHOLD = 0.1  # Adjust based on your audio levels
 SILENCE_DURATION = 3.0  # Seconds of silence before ending recording
 MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
 
@@ -142,8 +142,8 @@ POSITION_TOLERANCE = 5  # nautical miles
 
 # LLM Correlator Settings
 ENABLE_LLM_CORRELATION = True
-OLLAMA_MODEL = "mistral:7b-instruct"
+OLLAMA_MODEL = "gpt-oss:20b"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_REQUEST_TIMEOUT = 120  # seconds
-LLM_MAX_ADSB_CONTACTS = 50
-LLM_MAX_TRANSMISSIONS = 10
+LLM_MAX_ADSB_CONTACTS = 100
+LLM_MAX_TRANSMISSIONS = 15

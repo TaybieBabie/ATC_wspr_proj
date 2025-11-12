@@ -159,7 +159,7 @@ class OllamaCorrelator:
 
     def __init__(
         self,
-        model: str = "mistral:7b-instruct",
+        model: str = "gpt-oss:20b",
         base_url: str = "http://localhost:11434",
         max_adsb_contacts: int = 50,
         max_transmissions: int = 10,
@@ -188,7 +188,7 @@ class OllamaCorrelator:
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.5,
+                        "temperature": 0.8,
                         "num_predict": 4096,
                         "top_p": 0.9,
                     },
