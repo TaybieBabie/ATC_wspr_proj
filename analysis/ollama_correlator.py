@@ -58,11 +58,22 @@ class ADSBContact:
             else time.time()
         )
         callsign = aircraft.callsign.strip() or None
+        # Some data sources (including the default OpenSky implementation) expose
+        # the aircraft's course as ``track`` rather than ``heading``.  The
+        # previous implementation attempted to access ``aircraft.heading``
+        # directly which raises ``AttributeError`` for those objects.  Because
+        # ``build_adsb_contacts`` swallows any exception when converting an
+        # aircraft to a contact, the AttributeError caused every aircraft to be
+        # dropped and resulted in the LLM correlator receiving an empty ADS-B
+        # dataset.  Using ``getattr`` preserves compatibility with sources that
+        # provide either attribute without raising.
+        heading = getattr(aircraft, "heading", None)
+
         return cls(
             icao=(aircraft.icao24 or "").upper(),
             callsign=callsign,
             altitude=int(aircraft.altitude or 0),
-            heading=int(aircraft.heading or aircraft.track or 0),
+            heading=int(heading or aircraft.track or 0),
             speed=int(aircraft.ground_speed or 0),
             lat=float(aircraft.latitude or 0.0),
             lon=float(aircraft.longitude or 0.0),
