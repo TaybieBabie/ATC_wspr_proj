@@ -23,6 +23,7 @@ from utils.config import (
     ENABLE_ADSB,
     ADSB_SOURCE,
     MODEL_SIZE,
+    NUM_TRANSCRIPTION_WORKERS,
 )
 
 
@@ -149,7 +150,7 @@ class TranscriptionWorkerPool:
 class MultiChannelATCMonitor:
     """Main multi-channel monitoring system"""
 
-    def __init__(self, channel_configs, num_transcription_workers=3):
+    def __init__(self, channel_configs, num_transcription_workers=None):
         """
         Initialize multi-channel monitor
 
@@ -158,11 +159,19 @@ class MultiChannelATCMonitor:
             - frequency: Frequency (e.g., "118.7")
             - stream_url: LiveATC stream URL
             - color: Display color for GUI (optional)
+        
+        num_transcription_workers: Number of parallel transcription workers
+            If None, uses NUM_TRANSCRIPTION_WORKERS from config.py
+            Can be overridden via command line --workers argument
         """
         self.channel_configs = channel_configs
         self.channels = {}
         self.is_monitoring = False
         self.gui_queue = None
+
+        # Use config value if not specified
+        if num_transcription_workers is None:
+            num_transcription_workers = NUM_TRANSCRIPTION_WORKERS
 
         # Create transcription worker pool
         self.transcription_pool = TranscriptionWorkerPool(

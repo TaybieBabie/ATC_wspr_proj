@@ -4,7 +4,7 @@ import time
 
 from core.monitor import ATCMonitor
 from core.multi_channel_monitor import MultiChannelATCMonitor
-from utils.config import VAD_THRESHOLD, SILENCE_DURATION, LIVEATC_STREAM_URL
+from utils.config import VAD_THRESHOLD, SILENCE_DURATION, LIVEATC_STREAM_URL, NUM_TRANSCRIPTION_WORKERS
 from utils.console_logger import section
 import json
 
@@ -79,7 +79,8 @@ def main():
     parser.add_argument('--monitor', action='store_true', help='Start single-channel monitoring')
     parser.add_argument('--multi', action='store_true', help='Start multi-channel monitoring')
     parser.add_argument('--channels', type=str, help='Path to channels configuration JSON file')
-    parser.add_argument('--workers', type=int, default=3, help='Number of transcription workers (default: 3)')
+    parser.add_argument('--workers', type=int, default=None, 
+                       help=f'Number of transcription workers (default: {NUM_TRANSCRIPTION_WORKERS} from config)')
     parser.add_argument('--duration', type=int, help='Monitoring duration in seconds')
     parser.add_argument('--vad-threshold', type=float, default=VAD_THRESHOLD)
     parser.add_argument('--silence-duration', type=float, default=SILENCE_DURATION)
@@ -118,7 +119,9 @@ def main():
             ]
 
         # Create multi-channel monitor
-        atc_monitor = MultiChannelATCMonitor(channels, num_transcription_workers=args.workers)
+        # If --workers specified, use it; otherwise uses NUM_TRANSCRIPTION_WORKERS from config
+        num_workers = args.workers if args.workers is not None else NUM_TRANSCRIPTION_WORKERS
+        atc_monitor = MultiChannelATCMonitor(channels, num_transcription_workers=num_workers)
 
         # Start monitoring in background thread
         monitor_thread = threading.Thread(target=atc_monitor.start_monitoring)
