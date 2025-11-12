@@ -14,6 +14,11 @@ from transcription.transcriber import GPUWhisperTranscriber
 from analysis.analyzer import analyze_transcript
 from tracking.adsb_tracker import ADSBTracker, OpenSkySource
 from analysis.correlator import ATCCorrelator
+from analysis.ollama_correlator import (
+    OllamaCorrelator as OllamaLLMCorrelator,
+    build_adsb_contacts,
+    build_atc_transmission,
+)
 from utils.console_logger import info, success, warning, error, section
 from utils.config import (
     VAD_THRESHOLD,
@@ -24,6 +29,12 @@ from utils.config import (
     ADSB_SOURCE,
     MODEL_SIZE,
     NUM_TRANSCRIPTION_WORKERS,
+    ENABLE_LLM_CORRELATION,
+    OLLAMA_MODEL,
+    OLLAMA_BASE_URL,
+    OLLAMA_REQUEST_TIMEOUT,
+    LLM_MAX_ADSB_CONTACTS,
+    LLM_MAX_TRANSMISSIONS,
 )
 
 
@@ -169,6 +180,12 @@ class MultiChannelATCMonitor:
         self.is_monitoring = False
         self.gui_queue = None
 
+        self.transmission_lock = threading.Lock()
+        self.channel_transmissions = {}
+        self.last_llm_results = {}
+        self.llm_correlator = None
+        self.max_llm_history = max(LLM_MAX_TRANSMISSIONS * 3, LLM_MAX_TRANSMISSIONS or 1)
+
         # Use config value if not specified
         if num_transcription_workers is None:
             num_transcription_workers = NUM_TRANSCRIPTION_WORKERS
@@ -202,8 +219,10 @@ class MultiChannelATCMonitor:
                 'transmissions_recorded': 0,
                 'transmissions_transcribed': 0,
                 'callsigns_detected': set(),
-                'last_transmission': None
+                'last_transmission': None,
+                'non_transponder_alerts': 0,
             }
+            self.channel_transmissions[channel_name] = []
 
         # Initialize ADS-B tracking if enabled
         self.enable_adsb = ENABLE_ADSB
@@ -214,6 +233,22 @@ class MultiChannelATCMonitor:
                 source = OpenSkySource()
             self.adsb_tracker = ADSBTracker(source)
             self.correlator = ATCCorrelator(self.adsb_tracker)
+
+            if ENABLE_LLM_CORRELATION:
+                try:
+                    self.llm_correlator = OllamaLLMCorrelator(
+                        model=OLLAMA_MODEL,
+                        base_url=OLLAMA_BASE_URL,
+                        max_adsb_contacts=LLM_MAX_ADSB_CONTACTS,
+                        max_transmissions=LLM_MAX_TRANSMISSIONS,
+                        request_timeout=OLLAMA_REQUEST_TIMEOUT,
+                    )
+                    self.max_llm_history = max(
+                        self.max_llm_history,
+                        self.llm_correlator.context_builder.max_tx * 3,
+                    )
+                except Exception as exc:
+                    warning(f"Failed to initialize LLM correlator: {exc}", emoji="⚠️")
 
     def _create_channel_audio_dir(self, config):
         """Create directory for channel audio files"""
@@ -369,6 +404,9 @@ class MultiChannelATCMonitor:
                 'transcription_number': self.stats['channels'][channel_name]['transmissions_transcribed']
             }))
 
+        if self.llm_correlator:
+            self.run_llm_correlation(channel_info, transcript_text, audio_file, result)
+
         # Analyze if needed
         # Note: You may want to make analysis optional or async for performance
         # analysis = analyze_transcript(transcript_file)
@@ -390,6 +428,93 @@ class MultiChannelATCMonitor:
             json.dump(result, f, indent=2)
 
         return transcript_file
+
+    def run_llm_correlation(self, channel_info, transcript_text, audio_file, transcription_result):
+        """Run the Ollama correlation workflow for a channel."""
+        if not self.llm_correlator:
+            return
+
+        channel_name = channel_info.get('name', 'Unknown')
+        frequency = str(channel_info.get('frequency', ''))
+        segments = transcription_result.get('segments', []) if isinstance(transcription_result, dict) else []
+        metadata = transcription_result.get('metadata', {}) if isinstance(transcription_result, dict) else {}
+        metadata_timestamp = metadata.get('timestamp')
+
+        try:
+            recorded_timestamp = os.path.getmtime(audio_file)
+        except OSError:
+            recorded_timestamp = None
+
+        transmission = build_atc_transmission(
+            transcript_text,
+            frequency,
+            channel_name,
+            segments,
+            recorded_timestamp=recorded_timestamp,
+            metadata_timestamp=metadata_timestamp,
+        )
+
+        with self.transmission_lock:
+            history = self.channel_transmissions.setdefault(channel_name, [])
+            history.append(transmission)
+            if len(history) > self.max_llm_history:
+                history = history[-self.max_llm_history:]
+                self.channel_transmissions[channel_name] = history
+            recent_transmissions = history[-self.llm_correlator.context_builder.max_tx :]
+
+        adsb_contacts = []
+        if getattr(self, 'adsb_tracker', None):
+            adsb_contacts = build_adsb_contacts(self.adsb_tracker.current_aircraft.values())
+
+        result = self.llm_correlator.correlate(adsb_contacts, recent_transmissions)
+        self.last_llm_results[channel_name] = result
+
+        if 'error' in result:
+            warning(f"[{channel_name}] LLM correlation error: {result['error']}", emoji="⚠️")
+            return
+
+        summary = result.get('summary')
+        if summary:
+            info(f"[{channel_name}] LLM Summary: {summary}", emoji="🧠")
+
+        for correlation in result.get('correlations', []):
+            tx_id = correlation.get('transmission_id')
+            if not isinstance(tx_id, int):
+                continue
+            if 0 <= tx_id < len(recent_transmissions):
+                tx = recent_transmissions[tx_id]
+                matched_icao = correlation.get('matched_icao', 'NO_MATCH')
+                matched_callsign = correlation.get('matched_callsign', '') or ''
+                try:
+                    confidence = float(correlation.get('confidence', 0.0))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                flags = correlation.get('flags', []) or []
+                flag_text = f" flags={','.join(flags)}" if flags else ""
+                info(
+                    f"[{channel_name}] LLM Match [{tx_id}] {matched_icao} {matched_callsign} (conf {confidence:.2f}){flag_text}",
+                    emoji="📎",
+                )
+                info(f"    Text: {tx.text[:120]}")
+
+        for alert in result.get('alerts', []):
+            alert_type = alert.get('type', 'UNKNOWN')
+            details = alert.get('details', '')
+            severity = alert.get('severity', 'LOW')
+            warning(
+                f"[{channel_name}] LLM Alert [{severity}] {alert_type}: {details}",
+                emoji="🚨",
+            )
+            if alert_type == 'NON_TRANSPONDER':
+                self.stats['channels'][channel_name]['non_transponder_alerts'] += 1
+            if self.gui_queue:
+                self.gui_queue.put((
+                    "alert",
+                    {
+                        'type': f"LLM {alert_type} ({severity})",
+                        'transcript': f"[{channel_name}] {details or transcript_text}",
+                    },
+                ))
 
     def adsb_update_worker(self):
         """Background thread to update ADS-B data"""

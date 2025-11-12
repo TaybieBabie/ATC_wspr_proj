@@ -139,3 +139,11 @@ DUMP1090_URL = 'http://localhost:8080'
 CORRELATION_WINDOW = 30  # seconds
 ALTITUDE_TOLERANCE = 500  # feet
 POSITION_TOLERANCE = 5  # nautical miles
+
+# LLM Correlator Settings
+ENABLE_LLM_CORRELATION = True
+OLLAMA_MODEL = "mistral:7b-instruct"
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_REQUEST_TIMEOUT = 120  # seconds
+LLM_MAX_ADSB_CONTACTS = 50
+LLM_MAX_TRANSMISSIONS = 10
