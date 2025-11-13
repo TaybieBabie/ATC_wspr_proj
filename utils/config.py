@@ -144,6 +144,43 @@ POSITION_TOLERANCE = 5  # nautical miles
 ENABLE_LLM_CORRELATION = True
 OLLAMA_MODEL = "gpt-oss:20b"
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_REQUEST_TIMEOUT = 180  # seconds
+# Timeout for Ollama correlation requests (kept higher for large batches)
+OLLAMA_REQUEST_TIMEOUT = 220  # seconds
 LLM_MAX_ADSB_CONTACTS = 100
 LLM_MAX_TRANSMISSIONS = 15
+
+# Advanced Ollama correlator tuning (these were previously hardcoded)
+# Maximum tokens supported by the Ollama model context window
+OLLAMA_CONTEXT_WINDOW_TOKENS = 8192
+# Tokens reserved for the model's response to avoid truncation
+OLLAMA_MAX_RESPONSE_TOKENS = 4096
+# Conservative character-to-token ratio for prompt budgeting
+OLLAMA_CHARS_PER_TOKEN = 4.0
+# Extra buffer added to token estimates for safety
+OLLAMA_TOKEN_ESTIMATE_BUFFER = 20
+# Estimated tokens consumed per correlation entry in the response JSON
+OLLAMA_TOKENS_PER_CORRELATION = 180
+# Tokens held back for JSON wrappers and metadata in the response
+OLLAMA_RESPONSE_JSON_OVERHEAD = 200
+# Maximum transmissions to include per request (prevents oversized responses)
+OLLAMA_MAX_TRANSMISSION_BATCH = 10
+# Portion of prompt token budget dedicated to ADS-B contact context
+OLLAMA_ADSB_PROMPT_RATIO = 0.70
+# Character limit for previewing transmission text inside prompts
+OLLAMA_TRANSMISSION_PREVIEW_CHARS = 150
+# Temperature used for Ollama generation (lower for deterministic output)
+OLLAMA_TEMPERATURE = 0.3
+# Top-p nucleus sampling value for Ollama generation
+OLLAMA_TOP_P = 0.9
+# Repeat penalty applied to discourage looping responses
+OLLAMA_REPEAT_PENALTY = 1.1
+# Number of responses tracked when computing moving average latency
+OLLAMA_RESPONSE_TIME_WINDOW = 100
+# Safety buffer before assuming the response hit the token ceiling
+OLLAMA_RESPONSE_SAFETY_MARGIN = 50
+# Minimum alert confidence the LLM must report before surfacing
+OLLAMA_ALERT_CONFIDENCE_THRESHOLD = 0.7
+# Delay used when bringing up the debug monitor to ensure Tk is ready
+OLLAMA_DEBUG_MONITOR_DELAY = 0.5
+# Enable the rich Tk debug monitor when Tkinter is available
+OLLAMA_ENABLE_DEBUG_MONITOR = True

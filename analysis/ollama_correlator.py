@@ -20,6 +20,30 @@ except ImportError:
     HAS_TK = False
 
 from tracking.adsb_tracker import Aircraft
+from utils.config import (
+    LLM_MAX_ADSB_CONTACTS,
+    LLM_MAX_TRANSMISSIONS,
+    OLLAMA_ADSB_PROMPT_RATIO,
+    OLLAMA_ALERT_CONFIDENCE_THRESHOLD,
+    OLLAMA_BASE_URL,
+    OLLAMA_CHARS_PER_TOKEN,
+    OLLAMA_CONTEXT_WINDOW_TOKENS,
+    OLLAMA_DEBUG_MONITOR_DELAY,
+    OLLAMA_ENABLE_DEBUG_MONITOR,
+    OLLAMA_MAX_RESPONSE_TOKENS,
+    OLLAMA_MAX_TRANSMISSION_BATCH,
+    OLLAMA_MODEL,
+    OLLAMA_REPEAT_PENALTY,
+    OLLAMA_REQUEST_TIMEOUT,
+    OLLAMA_RESPONSE_JSON_OVERHEAD,
+    OLLAMA_RESPONSE_SAFETY_MARGIN,
+    OLLAMA_RESPONSE_TIME_WINDOW,
+    OLLAMA_TEMPERATURE,
+    OLLAMA_TOKENS_PER_CORRELATION,
+    OLLAMA_TOKEN_ESTIMATE_BUFFER,
+    OLLAMA_TOP_P,
+    OLLAMA_TRANSMISSION_PREVIEW_CHARS,
+)
 
 
 @dataclass
@@ -303,15 +327,23 @@ class DebugMonitor:
 class RollingContextManager:
     """Manages rolling context window for the LLM with strict budget enforcement."""
 
-    def __init__(self, max_context_tokens: int = 8192, max_response_tokens: int = 2048):
+    def __init__(
+        self,
+        max_context_tokens: int = OLLAMA_CONTEXT_WINDOW_TOKENS,
+        max_response_tokens: int = OLLAMA_MAX_RESPONSE_TOKENS,
+    ):
         self.max_context_tokens = max_context_tokens
         self.max_response_tokens = max_response_tokens
         # Total available = context - response reserve
         self.max_prompt_tokens = max_context_tokens - max_response_tokens
 
         # More conservative token estimation for JSON responses
-        self.chars_per_token = 4.0  # Increased from 3.5 for safety
-        self.tokens_per_correlation = 180  # Estimated tokens per correlation entry
+        self.chars_per_token = OLLAMA_CHARS_PER_TOKEN
+        self.tokens_per_correlation = OLLAMA_TOKENS_PER_CORRELATION
+        self.token_estimate_buffer = OLLAMA_TOKEN_ESTIMATE_BUFFER
+        self.response_json_overhead = OLLAMA_RESPONSE_JSON_OVERHEAD
+        self.max_transmission_batch = OLLAMA_MAX_TRANSMISSION_BATCH
+        self.adsb_prompt_ratio = OLLAMA_ADSB_PROMPT_RATIO
 
         self.system_prompt: str = ""
         self.system_prompt_tokens: int = 0
@@ -321,14 +353,14 @@ class RollingContextManager:
         self.system_prompt_tokens = self._estimate_tokens(prompt)
 
     def _estimate_tokens(self, text: str) -> int:
-        return int(len(text) / self.chars_per_token) + 20  # Larger buffer
+        return int(len(text) / self.chars_per_token) + self.token_estimate_buffer
 
     def calculate_max_transmissions(self, num_adsb: int) -> int:
         """Calculate how many transmissions we can safely process."""
         # Each transmission needs ~180 tokens in response
-        available_response = self.max_response_tokens - 200  # Reserve for JSON wrapper
+        available_response = self.max_response_tokens - self.response_json_overhead
         max_tx = available_response // self.tokens_per_correlation
-        return min(max_tx, 10)  # Hard cap at 10 transmissions
+        return min(max_tx, self.max_transmission_batch)
 
     def build_context_prompt(
         self,
@@ -345,8 +377,8 @@ class RollingContextManager:
         template_tokens = self._estimate_tokens(template)
         available -= template_tokens
 
-        # 70% for ADS-B, 30% for transmissions (ADS-B is more compact)
-        adsb_budget = int(available * 0.70)
+        # Allocate prompt budget between ADS-B contacts and transmissions
+        adsb_budget = int(available * self.adsb_prompt_ratio)
         tx_budget = available - adsb_budget
 
         # Select ADS-B contacts that fit
@@ -399,9 +431,15 @@ Ensure complete, valid JSON with all brackets closed."""
 class ContextBuilder:
     """Builds the prompt used to query the LLM."""
 
-    def __init__(self, max_adsb_contacts: int = 100, max_transmissions: int = 10):
+    def __init__(
+        self,
+        max_adsb_contacts: int = LLM_MAX_ADSB_CONTACTS,
+        max_transmissions: int = LLM_MAX_TRANSMISSIONS,
+        preview_chars: int = OLLAMA_TRANSMISSION_PREVIEW_CHARS,
+    ):
         self.max_adsb = max_adsb_contacts
         self.max_tx = max_transmissions
+        self.preview_chars = preview_chars
 
     def build_system_prompt(self) -> str:
         return """ATC correlation analyst. Match transmissions to ADS-B using fuzzy logic.
@@ -434,7 +472,10 @@ OUTPUT (keep reasoning SHORT):
     def _format_transmissions(self, txs: Sequence[ATCTransmission]) -> str:
         lines: List[str] = []
         for idx, tx in enumerate(txs):
-            text = tx.text[:150] + "..." if len(tx.text) > 150 else tx.text
+            if len(tx.text) > self.preview_chars:
+                text = tx.text[: self.preview_chars] + "..."
+            else:
+                text = tx.text
             lines.append(f"[{idx}] {tx.channel_name}: \"{text}\"")
         return "\n".join(lines) if lines else "(none)"
 
@@ -444,12 +485,12 @@ class OllamaCorrelator:
 
     def __init__(
         self,
-        model: str = "gpt-oss:20b",
-        base_url: str = "http://localhost:11434",
-        max_adsb_contacts: int = 80,
-        max_transmissions: int = 8,  # Reduced default
-        request_timeout: int = 220,
-        enable_debug_monitor: bool = True,
+        model: str = OLLAMA_MODEL,
+        base_url: str = OLLAMA_BASE_URL,
+        max_adsb_contacts: int = LLM_MAX_ADSB_CONTACTS,
+        max_transmissions: int = LLM_MAX_TRANSMISSIONS,
+        request_timeout: int = OLLAMA_REQUEST_TIMEOUT,
+        enable_debug_monitor: bool = OLLAMA_ENABLE_DEBUG_MONITOR,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -458,8 +499,8 @@ class OllamaCorrelator:
             max_transmissions=max_transmissions,
         )
         self.rolling_context = RollingContextManager(
-            max_context_tokens=8192,
-            max_response_tokens=4096  # Strict response budget
+            max_context_tokens=OLLAMA_CONTEXT_WINDOW_TOKENS,
+            max_response_tokens=OLLAMA_MAX_RESPONSE_TOKENS,
         )
         self.request_timeout = request_timeout
 
@@ -468,14 +509,14 @@ class OllamaCorrelator:
             "Total Tokens": 0,
             "Avg Response Time": "0.0s",
             "Errors": 0,
-            "Context Size": "0/8192",
+            "Context Size": f"0/{self.rolling_context.max_context_tokens}",
         }
         self._response_times: List[float] = []
 
         self.debug_monitor = None
         if enable_debug_monitor and HAS_TK:
             self.debug_monitor = DebugMonitor()
-            time.sleep(0.5)
+            time.sleep(OLLAMA_DEBUG_MONITOR_DELAY)
 
         system_prompt = self.context_builder.build_system_prompt()
         self.rolling_context.set_system_prompt(system_prompt)
@@ -544,11 +585,11 @@ class OllamaCorrelator:
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.3,  # Lower for more consistent output
+                        "temperature": OLLAMA_TEMPERATURE,
                         "num_predict": self.rolling_context.max_response_tokens,
-                        "top_p": 0.9,
+                        "top_p": OLLAMA_TOP_P,
                         "num_ctx": self.rolling_context.max_context_tokens,
-                        "repeat_penalty": 1.1,
+                        "repeat_penalty": OLLAMA_REPEAT_PENALTY,
                     },
                 },
                 timeout=self.request_timeout,
@@ -557,7 +598,7 @@ class OllamaCorrelator:
 
             elapsed = time.time() - start_time
             self._response_times.append(elapsed)
-            if len(self._response_times) > 100:
+            if len(self._response_times) > OLLAMA_RESPONSE_TIME_WINDOW:
                 self._response_times.pop(0)
             avg_time = sum(self._response_times) / len(self._response_times)
             self.stats["Avg Response Time"] = f"{avg_time:.1f}s"
@@ -575,7 +616,7 @@ class OllamaCorrelator:
             self._log(f"Response: {elapsed:.1f}s (prompt: {prompt_eval_count}, response: {eval_count} tokens)", "response")
 
             # Check for truncation
-            if eval_count >= self.rolling_context.max_response_tokens - 50:
+            if eval_count >= self.rolling_context.max_response_tokens - OLLAMA_RESPONSE_SAFETY_MARGIN:
                 self._log("WARNING: Response likely truncated (hit token limit)", "warning")
                 response_text = self._attempt_json_repair(response_text)
             elif not response_text.rstrip().endswith("}"):
@@ -595,7 +636,7 @@ class OllamaCorrelator:
                 original_count = len(parsed["alerts"])
                 parsed["alerts"] = [
                     alert for alert in parsed["alerts"]
-                    if alert.get("confidence", 0) >= 0.7
+                    if alert.get("confidence", 0) >= OLLAMA_ALERT_CONFIDENCE_THRESHOLD
                 ]
                 filtered = original_count - len(parsed["alerts"])
                 if filtered > 0:
