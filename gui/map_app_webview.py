@@ -83,10 +83,292 @@ class OpenSkyMapApp:
 
         info("Injecting ATC monitor...")
 
+        # First inject the draggable functionality
+        self._inject_draggable_system()
+
         if self.is_multi_channel:
             self._inject_multi_channel_monitor()
         else:
             self._inject_single_channel_monitor()
+
+    def _inject_draggable_system(self):
+        """Inject the reusable draggable system"""
+        draggable_js = """
+        (function() {
+            if (window.draggableSystemInjected) {
+                return true;
+            }
+            window.draggableSystemInjected = true;
+
+            console.log('[ATC] Injecting draggable system...');
+
+            // Storage key prefix for positions
+            const STORAGE_PREFIX = 'atc_panel_pos_';
+
+            // Default positions for panels
+            window.defaultPanelPositions = {
+                'multi-channel-panel': { top: 80, right: 20, bottom: null, left: null },
+                'multi-transcript-container': { top: null, right: null, bottom: 20, left: 20 },
+                'atc-transcript-container': { top: null, right: null, bottom: 20, left: 20 },
+                'atc-info-panel': { top: 80, right: 20, bottom: null, left: null }
+            };
+
+            // Save panel position to localStorage
+            window.savePanelPosition = function(panelId, position) {
+                try {
+                    localStorage.setItem(STORAGE_PREFIX + panelId, JSON.stringify(position));
+                } catch (e) {
+                    console.warn('[ATC] Could not save panel position:', e);
+                }
+            };
+
+            // Load panel position from localStorage
+            window.loadPanelPosition = function(panelId) {
+                try {
+                    const saved = localStorage.getItem(STORAGE_PREFIX + panelId);
+                    if (saved) {
+                        return JSON.parse(saved);
+                    }
+                } catch (e) {
+                    console.warn('[ATC] Could not load panel position:', e);
+                }
+                return null;
+            };
+
+            // Reset panel to default position
+            window.resetPanelPosition = function(panelId) {
+                const panel = document.getElementById(panelId);
+                const defaults = window.defaultPanelPositions[panelId];
+
+                if (panel && defaults) {
+                    panel.style.top = defaults.top !== null ? defaults.top + 'px' : 'auto';
+                    panel.style.right = defaults.right !== null ? defaults.right + 'px' : 'auto';
+                    panel.style.bottom = defaults.bottom !== null ? defaults.bottom + 'px' : 'auto';
+                    panel.style.left = defaults.left !== null ? defaults.left + 'px' : 'auto';
+
+                    try {
+                        localStorage.removeItem(STORAGE_PREFIX + panelId);
+                    } catch (e) {}
+
+                    console.log('[ATC] Reset position for:', panelId);
+                }
+            };
+
+            // Reset all panels to default positions
+            window.resetAllPanelPositions = function() {
+                Object.keys(window.defaultPanelPositions).forEach(panelId => {
+                    window.resetPanelPosition(panelId);
+                });
+            };
+
+            // Make an element draggable
+            window.makeDraggable = function(element, handleSelector) {
+                if (!element) return;
+
+                const handle = handleSelector ? element.querySelector(handleSelector) : element;
+                if (!handle) return;
+
+                let isDragging = false;
+                let startX, startY;
+                let startLeft, startTop;
+                let startRight, startBottom;
+
+                // Apply saved position if available
+                const savedPos = window.loadPanelPosition(element.id);
+                if (savedPos) {
+                    if (savedPos.left !== null) {
+                        element.style.left = savedPos.left + 'px';
+                        element.style.right = 'auto';
+                    }
+                    if (savedPos.top !== null) {
+                        element.style.top = savedPos.top + 'px';
+                        element.style.bottom = 'auto';
+                    }
+                }
+
+                // Style the handle
+                handle.style.cursor = 'move';
+                handle.style.userSelect = 'none';
+
+                handle.addEventListener('mousedown', function(e) {
+                    // Don't drag if clicking on buttons or inputs
+                    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || 
+                        e.target.classList.contains('no-drag')) {
+                        return;
+                    }
+
+                    isDragging = true;
+                    startX = e.clientX;
+                    startY = e.clientY;
+
+                    // Get current position
+                    const rect = element.getBoundingClientRect();
+                    const computedStyle = window.getComputedStyle(element);
+
+                    // Convert to left/top positioning for dragging
+                    startLeft = rect.left;
+                    startTop = rect.top;
+
+                    // Switch to left/top positioning
+                    element.style.left = startLeft + 'px';
+                    element.style.top = startTop + 'px';
+                    element.style.right = 'auto';
+                    element.style.bottom = 'auto';
+
+                    // Visual feedback
+                    element.style.opacity = '0.9';
+                    element.style.boxShadow = '0 8px 32px rgba(0,0,0,0.6)';
+                    element.style.transition = 'none';
+
+                    e.preventDefault();
+                });
+
+                document.addEventListener('mousemove', function(e) {
+                    if (!isDragging) return;
+
+                    const deltaX = e.clientX - startX;
+                    const deltaY = e.clientY - startY;
+
+                    let newLeft = startLeft + deltaX;
+                    let newTop = startTop + deltaY;
+
+                    // Keep within viewport bounds
+                    const rect = element.getBoundingClientRect();
+                    const maxLeft = window.innerWidth - rect.width;
+                    const maxTop = window.innerHeight - rect.height;
+
+                    newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+                    newTop = Math.max(0, Math.min(newTop, maxTop));
+
+                    element.style.left = newLeft + 'px';
+                    element.style.top = newTop + 'px';
+                });
+
+                document.addEventListener('mouseup', function(e) {
+                    if (!isDragging) return;
+
+                    isDragging = false;
+
+                    // Reset visual feedback
+                    element.style.opacity = '';
+                    element.style.boxShadow = '';
+                    element.style.transition = '';
+
+                    // Save position
+                    const rect = element.getBoundingClientRect();
+                    window.savePanelPosition(element.id, {
+                        left: rect.left,
+                        top: rect.top
+                    });
+
+                    console.log('[ATC] Saved position for:', element.id);
+                });
+
+                // Prevent text selection while dragging
+                handle.addEventListener('selectstart', function(e) {
+                    if (isDragging) e.preventDefault();
+                });
+
+                console.log('[ATC] Made draggable:', element.id);
+            };
+
+            // Add global styles for draggable elements
+            const style = document.createElement('style');
+            style.textContent = `
+                .drag-handle {
+                    cursor: move !important;
+                    user-select: none;
+                }
+
+                .drag-handle:hover {
+                    background: rgba(255, 255, 255, 0.1);
+                }
+
+                .drag-handle:active {
+                    background: rgba(255, 255, 255, 0.15);
+                }
+
+                .panel-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin: -20px -20px 15px -20px;
+                    padding: 12px 15px;
+                    background: rgba(255, 255, 255, 0.1);
+                    border-radius: 8px 8px 0 0;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                }
+
+                .panel-title {
+                    font-size: 16px;
+                    font-weight: 600;
+                    margin: 0;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+
+                .panel-controls {
+                    display: flex;
+                    gap: 5px;
+                }
+
+                .panel-btn {
+                    background: rgba(255, 255, 255, 0.1);
+                    border: none;
+                    color: white;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    transition: background 0.2s;
+                }
+
+                .panel-btn:hover {
+                    background: rgba(255, 255, 255, 0.2);
+                }
+
+                .panel-btn.reset-btn:hover {
+                    background: rgba(255, 100, 100, 0.3);
+                }
+
+                .resize-handle {
+                    position: absolute;
+                    bottom: 0;
+                    right: 0;
+                    width: 15px;
+                    height: 15px;
+                    cursor: se-resize;
+                    opacity: 0.5;
+                }
+
+                .resize-handle::after {
+                    content: '';
+                    position: absolute;
+                    bottom: 3px;
+                    right: 3px;
+                    width: 8px;
+                    height: 8px;
+                    border-right: 2px solid rgba(255,255,255,0.5);
+                    border-bottom: 2px solid rgba(255,255,255,0.5);
+                }
+            `;
+            document.head.appendChild(style);
+
+            console.log('[ATC] Draggable system ready');
+            return true;
+        })();
+        """
+
+        try:
+            self.window.evaluate_js(draggable_js)
+            success("Draggable system injected")
+        except Exception as e:
+            error(f"Error injecting draggable system: {e}")
 
     def _inject_multi_channel_monitor(self):
         """Inject multi-channel monitoring interface"""
@@ -98,13 +380,13 @@ class OpenSkyMapApp:
             color = config.get('color', '#FFFFFF')
             stream_url = config.get('stream_url', '')
             channels_html += f"""
-            <div class=\"channel-item\" style=\"margin-bottom: 8px; padding: 5px; border-left: 3px solid {color};\">
-                <div style=\"font-weight: bold; font-size: 12px;\">{config['name']}</div>
-                <div style=\"font-size: 11px; color: #888;\">
+            <div class="channel-item" style="margin-bottom: 8px; padding: 5px; border-left: 3px solid {color};">
+                <div style="font-weight: bold; font-size: 12px;">{config['name']}</div>
+                <div style="font-size: 11px; color: #888;">
                     {freq} MHz -
-                    <span id=\"channel-count-{freq_id}\" style=\"color: {color};\">0</span> transmissions
-                    <button id=\"mute-{freq_id}\" class=\"mute-btn\" onclick=\"toggleMute('{freq_id}')\">Unmute</button>
-                    <audio id=\"audio-{freq_id}\" data-stream=\"{stream_url}\" preload=\"none\" style=\"display:none;\"></audio>
+                    <span id="channel-count-{freq_id}" style="color: {color};">0</span> transmissions
+                    <button id="mute-{freq_id}" class="mute-btn no-drag" onclick="toggleMute('{freq_id}')">Unmute</button>
+                    <audio id="audio-{freq_id}" data-stream="{stream_url}" preload="none" style="display:none;"></audio>
                 </div>
             </div>
             """
@@ -145,9 +427,14 @@ class OpenSkyMapApp:
             `;
 
             panel.innerHTML = `
-                <h3 style="margin: 0 0 15px 0; font-size: 18px; font-weight: 600;">
-                    📡 Multi-Channel ATC Monitor
-                </h3>
+                <div class="panel-header drag-handle">
+                    <h3 class="panel-title">
+                        <span>📡</span> Multi-Channel ATC
+                    </h3>
+                    <div class="panel-controls">
+                        <button class="panel-btn reset-btn no-drag" onclick="resetPanelPosition('multi-channel-panel')" title="Reset Position">↺</button>
+                    </div>
+                </div>
 
                 <div style="margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px;">
                     <div style="font-size: 12px; margin-bottom: 5px;">
@@ -182,6 +469,11 @@ class OpenSkyMapApp:
 
             document.body.appendChild(panel);
 
+            // Make the panel draggable by its header
+            if (window.makeDraggable) {{
+                window.makeDraggable(panel, '.panel-header');
+            }}
+
             // Toggle audio playback for a channel without affecting recording
             window.toggleMute = function(freqId) {{
                 const audioEl = document.getElementById('audio-' + freqId);
@@ -212,23 +504,42 @@ class OpenSkyMapApp:
                 position: fixed;
                 bottom: 20px;
                 left: 20px;
-                right: 340px;
-                max-width: 900px;
+                width: 600px;
+                max-width: calc(100vw - 380px);
                 background: rgba(0, 0, 0, 0.9);
                 color: white;
-                padding: 15px 20px;
+                padding: 20px;
                 border-radius: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 z-index: 9999;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.5);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                max-height: 250px;
+                max-height: 300px;
                 overflow-y: auto;
             `;
-            transcriptContainer.innerHTML = '<div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>';
+
+            transcriptContainer.innerHTML = `
+                <div class="panel-header drag-handle">
+                    <h3 class="panel-title">
+                        <span>📝</span> Transcripts
+                    </h3>
+                    <div class="panel-controls">
+                        <button class="panel-btn reset-btn no-drag" onclick="resetPanelPosition('multi-transcript-container')" title="Reset Position">↺</button>
+                    </div>
+                </div>
+                <div id="transcript-content" style="margin-top: 10px;">
+                    <div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>
+                </div>
+            `;
+
             document.body.appendChild(transcriptContainer);
 
-            // Add custom scrollbar styles
+            // Make transcript container draggable
+            if (window.makeDraggable) {{
+                window.makeDraggable(transcriptContainer, '.panel-header');
+            }}
+
+            // Add custom scrollbar styles and animations
             const style = document.createElement('style');
             style.textContent = `
                 #multi-channel-panel::-webkit-scrollbar,
@@ -411,38 +722,146 @@ class OpenSkyMapApp:
             error(f"Error injecting monitor: {e}")
 
     def _inject_single_channel_monitor(self):
-        """Inject single-channel monitoring interface (existing code)"""
-        # Your existing single-channel injection code here
-        injection_js = """
-        // Your existing single-channel injection JavaScript
-        (function() {
-            // ... existing code ...
+        """Inject single-channel monitoring interface"""
+        injection_js = f"""
+        (function() {{
+            if (window.singleChannelMonitorInjected) {{
+                return true;
+            }}
+            window.singleChannelMonitorInjected = true;
 
-            // Initialize empty transcript container
+            console.log('[ATC] Injecting single-channel monitor...');
+
+            // Configuration
+            const AIRPORT_LAT = {AIRPORT_LAT};
+            const AIRPORT_LON = {AIRPORT_LON};
+            const SEARCH_RADIUS_NM = {SEARCH_RADIUS_NM};
+
+            // Create info panel
+            const infoPanel = document.createElement('div');
+            infoPanel.id = 'atc-info-panel';
+            infoPanel.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 20px;
+                background: rgba(20, 20, 20, 0.95);
+                color: white;
+                padding: 20px;
+                border-radius: 8px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                z-index: 10000;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                border: 2px solid rgba(255, 255, 255, 0.2);
+                width: 280px;
+            `;
+
+            infoPanel.innerHTML = `
+                <div class="panel-header drag-handle">
+                    <h3 class="panel-title">
+                        <span>📡</span> ATC Monitor
+                    </h3>
+                    <div class="panel-controls">
+                        <button class="panel-btn reset-btn no-drag" onclick="resetPanelPosition('atc-info-panel')" title="Reset Position">↺</button>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 15px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px;">
+                    <div style="font-size: 12px; margin-bottom: 5px;">
+                        <strong>Status:</strong> 
+                        <span id="atc-status" style="color: #00ff00;">● Active</span>
+                    </div>
+                    <div style="font-size: 12px; margin-bottom: 5px;">
+                        <strong>Area:</strong> PDX - {SEARCH_RADIUS_NM} NM
+                    </div>
+                    <div style="font-size: 12px;">
+                        <strong>Transmissions:</strong> 
+                        <span id="atc-transmission-count">0</span>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(infoPanel);
+
+            // Make info panel draggable
+            if (window.makeDraggable) {{
+                window.makeDraggable(infoPanel, '.panel-header');
+            }}
+
+            // Create transcript container
             const transcriptContainer = document.createElement('div');
             transcriptContainer.id = 'atc-transcript-container';
             transcriptContainer.style.cssText = `
                 position: fixed;
                 bottom: 20px;
                 left: 20px;
-                right: 20px;
-                max-width: 800px;
-                margin: 0 auto;
-                background: rgba(0, 0, 0, 0.85);
+                width: 600px;
+                max-width: calc(100vw - 340px);
+                background: rgba(0, 0, 0, 0.9);
                 color: white;
-                padding: 15px 20px;
+                padding: 20px;
                 border-radius: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 z-index: 9999;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.5);
                 border: 1px solid rgba(255, 255, 255, 0.1);
+                max-height: 250px;
+                overflow-y: auto;
                 display: none;
             `;
-            transcriptContainer.innerHTML = '<div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>';
+
+            transcriptContainer.innerHTML = `
+                <div class="panel-header drag-handle">
+                    <h3 class="panel-title">
+                        <span>📝</span> Transcripts
+                    </h3>
+                    <div class="panel-controls">
+                        <button class="panel-btn reset-btn no-drag" onclick="resetPanelPosition('atc-transcript-container')" title="Reset Position">↺</button>
+                    </div>
+                </div>
+                <div id="transcript-content" style="margin-top: 10px;">
+                    <div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>
+                </div>
+            `;
+
             document.body.appendChild(transcriptContainer);
 
+            // Make transcript container draggable
+            if (window.makeDraggable) {{
+                window.makeDraggable(transcriptContainer, '.panel-header');
+            }}
+
+            // Add animation styles
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes fadeInUp {{
+                    from {{
+                        opacity: 0;
+                        transform: translateY(20px);
+                    }}
+                    to {{
+                        opacity: 1;
+                        transform: translateY(0);
+                    }}
+                }}
+
+                #atc-transcript-container::-webkit-scrollbar {{
+                    width: 6px;
+                }}
+
+                #atc-transcript-container::-webkit-scrollbar-track {{
+                    background: rgba(255, 255, 255, 0.1);
+                    border-radius: 3px;
+                }}
+
+                #atc-transcript-container::-webkit-scrollbar-thumb {{
+                    background: rgba(255, 255, 255, 0.3);
+                    border-radius: 3px;
+                }}
+            `;
+            document.head.appendChild(style);
+
             return true;
-        })();
+        }})();
         """
 
         try:
@@ -506,6 +925,9 @@ class OpenSkyMapApp:
             timestamp = trans.get('timestamp', datetime.now().isoformat())
             time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp
 
+            # Escape any special characters in transcript text
+            transcript_text = trans.get('transcript', '').replace('`', '\\`').replace('$', '\\$')
+
             transcript_html += f"""
             <div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid {color}; background: rgba(255,255,255,0.05); animation: fadeInUp 0.5s ease-out;">
                 <div style="font-size: 11px; color: #888; margin-bottom: 3px;">
@@ -514,7 +936,7 @@ class OpenSkyMapApp:
                     <span style="float: right;">Worker {trans.get('worker_id', '?')}</span>
                 </div>
                 <div style="font-size: 13px; color: #fff;">
-                    {trans.get('transcript', '')[:200]}{'...' if len(trans.get('transcript', '')) > 200 else ''}
+                    {transcript_text[:200]}{'...' if len(transcript_text) > 200 else ''}
                 </div>
             </div>
             """
@@ -535,9 +957,14 @@ class OpenSkyMapApp:
             }}
 
             // Update transcript display
+            const contentEl = document.getElementById('transcript-content');
+            if (contentEl) {{
+                contentEl.innerHTML = `{transcript_html}`;
+            }}
+
+            // Scroll to bottom
             const container = document.getElementById('multi-transcript-container');
             if (container) {{
-                container.innerHTML = `{transcript_html}`;
                 container.scrollTop = container.scrollHeight;
             }}
         }})();
@@ -549,11 +976,10 @@ class OpenSkyMapApp:
             f"[{data.get('channel', 'Unknown')}] Transmission #{sum(self.channel_counters.values())}: {data.get('transcript', '')[:50]}...")
 
     def add_transmission(self, data):
-        """Add transmission for single-channel mode (existing method)"""
+        """Add transmission for single-channel mode"""
         if not self.window or not self.overlay_initialized:
             return
 
-        # Your existing single-channel transmission handling
         self.transmission_count += 1
         transcript = data.get('transcript', 'No transcript')
         timestamp = datetime.now().strftime('%H:%M:%S')
@@ -588,7 +1014,7 @@ class OpenSkyMapApp:
         if not self.window or self.is_multi_channel:
             return
 
-        # Your existing single-channel transcript display code
+        # Show container on first transcript
         if len(self.displayed_transcripts) == 1:
             show_container_js = """
             (function() {
@@ -604,18 +1030,23 @@ class OpenSkyMapApp:
         transcript_html = ""
         for i, trans in enumerate(self.displayed_transcripts):
             opacity = 0.4 + (0.6 * (i + 1) / len(self.displayed_transcripts))
+            text = trans['text'].replace('`', '\\`').replace('$', '\\$')
             transcript_html += f"""
-            <div class="transcript-item" style="opacity: {opacity}; margin-bottom: 8px;">
+            <div class="transcript-item" style="opacity: {opacity}; margin-bottom: 8px; animation: fadeInUp 0.3s ease-out;">
                 <span style="color: #888; font-size: 11px;">[{trans['timestamp']}]</span>
-                <span style="color: #fff; font-size: 13px;">{trans['text'][:150]}{'...' if len(trans['text']) > 150 else ''}</span>
+                <span style="color: #fff; font-size: 13px;">{text[:150]}{'...' if len(text) > 150 else ''}</span>
             </div>
             """
 
         js_code = f"""
         (function() {{
+            const contentEl = document.getElementById('transcript-content');
+            if (contentEl) {{
+                contentEl.innerHTML = `{transcript_html}`;
+            }}
+
             const container = document.getElementById('atc-transcript-container');
             if (container) {{
-                container.innerHTML = `{transcript_html}`;
                 container.scrollTop = container.scrollHeight;
             }}
             return true;
@@ -626,8 +1057,6 @@ class OpenSkyMapApp:
 
     def update_aircraft(self, data):
         """Update aircraft position (stub for now)"""
-        # This is a placeholder to prevent the error
-        # You can implement actual aircraft tracking display later
         pass
 
     def flash_channel(self, frequency):
@@ -660,7 +1089,8 @@ class OpenSkyMapApp:
         status = data.get('status', 'idle')
         color = '#00ff00' if status == 'idle' else '#ff9900'
         bg_color = 'rgba(0,255,0,0.2)' if status == 'idle' else 'rgba(255,153,0,0.3)'
-        status_text = 'Idle' if status == 'idle' else f"Processing<br>{data.get('channel', '')}"
+        channel = data.get('channel', '').replace("'", "\\'")
+        status_text = 'Idle' if status == 'idle' else f"Processing<br>{channel}"
 
         js_code = f"""
         (function() {{
@@ -704,12 +1134,13 @@ class OpenSkyMapApp:
         if not self.window:
             return
 
+        recording_num = data.get('recording_number', 0)
         js_code = f"""
         (function() {{
             const statusEl = document.getElementById('atc-status') || document.getElementById('monitor-status');
             if (statusEl) {{
                 statusEl.style.color = '#ff9900';
-                statusEl.textContent = '● Recording #{data.get('recording_number', 0)}';
+                statusEl.textContent = '● Recording #{recording_num}';
 
                 setTimeout(() => {{
                     statusEl.style.color = '#00ff00';
@@ -727,37 +1158,40 @@ class OpenSkyMapApp:
         if not self.window:
             return
 
-        alert_type = data.get('type', 'Unknown')
-        alert_text = data.get('transcript', '')[:100]
+        alert_type = data.get('type', 'Unknown').replace("'", "\\'")
+        alert_text = data.get('transcript', '')[:100].replace("'", "\\'").replace("`", "\\`")
 
         js_code = f"""
         (function() {{
             const alert = document.createElement('div');
             alert.style.cssText = `
                 position: fixed;
-                top: 300px;
-                right: 20px;
-                background: rgba(255, 0, 0, 0.9);
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(255, 0, 0, 0.95);
                 color: white;
-                padding: 15px 20px;
-                border-radius: 8px;
+                padding: 20px 30px;
+                border-radius: 12px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 z-index: 10001;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                box-shadow: 0 8px 32px rgba(255,0,0,0.5);
                 border: 2px solid #ff0000;
-                max-width: 400px;
+                max-width: 500px;
                 animation: pulse 1s infinite;
             `;
 
             alert.innerHTML = `
-                <h4 style="margin: 0 0 10px 0; font-size: 16px;">⚠️ ALERT: {alert_type.upper()}</h4>
+                <h4 style="margin: 0 0 10px 0; font-size: 18px;">⚠️ ALERT: {alert_type.upper()}</h4>
                 <p style="margin: 0; font-size: 14px;">{alert_text}</p>
             `;
 
             document.body.appendChild(alert);
 
             setTimeout(() => {{
-                alert.remove();
+                alert.style.transition = 'opacity 0.5s';
+                alert.style.opacity = '0';
+                setTimeout(() => alert.remove(), 500);
             }}, 10000);
 
             return true;
