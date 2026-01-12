@@ -105,21 +105,31 @@ SAMPLE_RATE = 16000  # Good for speech recognition
 CHANNELS = 1  # Mono for ATC
 AUDIO_DIR = "audio/raw/"
 
-# ATC settings
-ATC_FREQUENCY = "121.9"  # Your local frequency
-
 # VAD settings
 VAD_THRESHOLD = 0.1  # Adjust based on your audio levels
 SILENCE_DURATION = 3.0  # Seconds of silence before ending recording
 MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
 
-# LiveATC settings
-LIVEATC_STREAM_URL = "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=2025071901325928523"  # Replace with your local feed
-
 # Airport/Monitoring Area Configuration
+LOCATION_NAME = "Default"
 AIRPORT_LAT = 44.8851  # Your airport latitude (45.588699 for pdx, 44.8851 for msp)
 AIRPORT_LON = -93.2144  # Your airport longitude (-122.5975 for , -93.2144 for msp)
 SEARCH_RADIUS_NM = 50  # Nautical miles radius to monitor
+
+
+def apply_location_settings(location: dict) -> None:
+    """Apply location-specific settings from a configuration dictionary."""
+    global LOCATION_NAME, AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM
+
+    airport = location.get("airport", {}) if isinstance(location, dict) else {}
+    if "name" in location:
+        LOCATION_NAME = location["name"]
+    if "lat" in airport:
+        AIRPORT_LAT = airport["lat"]
+    if "lon" in airport:
+        AIRPORT_LON = airport["lon"]
+    if "search_radius_nm" in location:
+        SEARCH_RADIUS_NM = location["search_radius_nm"]
 
 # ADS-B Configuration
 ENABLE_ADSB = True

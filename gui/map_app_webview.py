@@ -3,7 +3,7 @@ import threading
 import queue
 import json
 from datetime import datetime
-from utils.config import AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM
+from utils import config
 from utils.console_logger import info, success, error, warning
 
 
@@ -25,28 +25,24 @@ class OpenSkyMapApp:
         self.displayed_transcripts = []
         self.max_displayed_transcripts = 10
 
-        # Check if this is multi-channel monitor
-        self.is_multi_channel = hasattr(atc_monitor, 'channel_configs')
-
         # Channel-specific counters for multi-channel mode
-        if self.is_multi_channel:
-            self.channel_counters = {}
-            for config in atc_monitor.channel_configs:
-                self.channel_counters[config['frequency']] = 0
-            self.num_workers = getattr(atc_monitor, 'transcription_pool', {}).num_workers if hasattr(atc_monitor,
-                                                                                                     'transcription_pool') else 3
-        else:
-            self.channel_counters = {}
-            self.num_workers = 1
+        self.channel_counters = {}
+        for config in atc_monitor.channel_configs:
+            self.channel_counters[config['frequency']] = 0
+        self.num_workers = getattr(
+            atc_monitor,
+            'transcription_pool',
+            {}
+        ).num_workers if hasattr(atc_monitor, 'transcription_pool') else 3
 
     def run(self):
         """Run the application"""
         # Create window with the OpenSky map URL
-        window_title = 'Multi-Channel ATC Monitor' if self.is_multi_channel else 'ATC Monitor - OpenSky Map'
+        window_title = 'Multi-Channel ATC Monitor'
         self.window = webview.create_window(
             window_title,
-            f'https://map.opensky-network.org/?lat={AIRPORT_LAT}&lon={AIRPORT_LON}&zoom=10',
-            width=1600 if self.is_multi_channel else 1400,
+            f'https://map.opensky-network.org/?lat={config.AIRPORT_LAT}&lon={config.AIRPORT_LON}&zoom=10',
+            width=1600,
             height=900
         )
 
@@ -83,10 +79,7 @@ class OpenSkyMapApp:
 
         info("Injecting ATC monitor...")
 
-        if self.is_multi_channel:
-            self._inject_multi_channel_monitor()
-        else:
-            self._inject_single_channel_monitor()
+        self._inject_multi_channel_monitor()
 
     def _inject_multi_channel_monitor(self):
         """Inject multi-channel monitoring interface"""
@@ -119,9 +112,9 @@ class OpenSkyMapApp:
             console.log('[ATC] Injecting multi-channel monitor...');
 
             // Configuration
-            const AIRPORT_LAT = {AIRPORT_LAT};
-            const AIRPORT_LON = {AIRPORT_LON};
-            const SEARCH_RADIUS_NM = {SEARCH_RADIUS_NM};
+            const AIRPORT_LAT = {config.AIRPORT_LAT};
+            const AIRPORT_LON = {config.AIRPORT_LON};
+            const SEARCH_RADIUS_NM = {config.SEARCH_RADIUS_NM};
             const RADIUS_METERS = SEARCH_RADIUS_NM * 1852;
 
             // Create main panel
@@ -155,7 +148,7 @@ class OpenSkyMapApp:
                         <span id="monitor-status" style="color: #00ff00;">● Active</span>
                     </div>
                     <div style="font-size: 12px; margin-bottom: 5px;">
-                        <strong>Area:</strong> PDX - {SEARCH_RADIUS_NM} NM
+                        <strong>Area:</strong> {config.LOCATION_NAME} - {config.SEARCH_RADIUS_NM} NM
                     </div>
                     <div style="font-size: 12px; margin-bottom: 5px;">
                         <strong>Total Transmissions:</strong> 
@@ -410,49 +403,6 @@ class OpenSkyMapApp:
         except Exception as e:
             error(f"Error injecting monitor: {e}")
 
-    def _inject_single_channel_monitor(self):
-        """Inject single-channel monitoring interface (existing code)"""
-        # Your existing single-channel injection code here
-        injection_js = """
-        // Your existing single-channel injection JavaScript
-        (function() {
-            // ... existing code ...
-
-            // Initialize empty transcript container
-            const transcriptContainer = document.createElement('div');
-            transcriptContainer.id = 'atc-transcript-container';
-            transcriptContainer.style.cssText = `
-                position: fixed;
-                bottom: 20px;
-                left: 20px;
-                right: 20px;
-                max-width: 800px;
-                margin: 0 auto;
-                background: rgba(0, 0, 0, 0.85);
-                color: white;
-                padding: 15px 20px;
-                border-radius: 8px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                z-index: 9999;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                display: none;
-            `;
-            transcriptContainer.innerHTML = '<div style="text-align: center; opacity: 0.5;">Waiting for transmissions...</div>';
-            document.body.appendChild(transcriptContainer);
-
-            return true;
-        })();
-        """
-
-        try:
-            result = self.window.evaluate_js(injection_js)
-            if result:
-                self.overlay_initialized = True
-                success("Single-channel monitor interface injected")
-        except Exception as e:
-            error(f"Error injecting monitor: {e}")
-
     def process_updates(self):
         """Process updates from the monitor"""
         while self.running:
@@ -462,10 +412,7 @@ class OpenSkyMapApp:
                 data = message[1]
 
                 if command == "atc_transmission":
-                    if self.is_multi_channel:
-                        self.add_multi_channel_transmission(data)
-                    else:
-                        self.add_transmission(data)
+                    self.add_multi_channel_transmission(data)
                 elif command == "update_aircraft":
                     self.update_aircraft(data)
                 elif command == "recording_started":
@@ -548,82 +495,6 @@ class OpenSkyMapApp:
         info(
             f"[{data.get('channel', 'Unknown')}] Transmission #{sum(self.channel_counters.values())}: {data.get('transcript', '')[:50]}...")
 
-    def add_transmission(self, data):
-        """Add transmission for single-channel mode (existing method)"""
-        if not self.window or not self.overlay_initialized:
-            return
-
-        # Your existing single-channel transmission handling
-        self.transmission_count += 1
-        transcript = data.get('transcript', 'No transcript')
-        timestamp = datetime.now().strftime('%H:%M:%S')
-
-        # Update counter
-        js_update_counter = f"""
-        (function() {{
-            const el = document.getElementById('atc-transmission-count');
-            if (el) {{
-                el.textContent = {self.transmission_count};
-            }}
-            return true;
-        }})();
-        """
-        self.window.evaluate_js(js_update_counter)
-
-        # Add to displayed transcripts
-        self.displayed_transcripts.append({
-            'id': f'transcript-{self.transmission_count}',
-            'text': transcript,
-            'timestamp': timestamp
-        })
-
-        if len(self.displayed_transcripts) > self.max_displayed_transcripts:
-            self.displayed_transcripts.pop(0)
-
-        self.update_transcript_display()
-        info(f"Transmission #{self.transmission_count}: {transcript[:50]}...")
-
-    def update_transcript_display(self):
-        """Update transcript display for single-channel mode"""
-        if not self.window or self.is_multi_channel:
-            return
-
-        # Your existing single-channel transcript display code
-        if len(self.displayed_transcripts) == 1:
-            show_container_js = """
-            (function() {
-                const container = document.getElementById('atc-transcript-container');
-                if (container) {
-                    container.style.display = 'block';
-                }
-            })();
-            """
-            self.window.evaluate_js(show_container_js)
-
-        # Build HTML for transcripts
-        transcript_html = ""
-        for i, trans in enumerate(self.displayed_transcripts):
-            opacity = 0.4 + (0.6 * (i + 1) / len(self.displayed_transcripts))
-            transcript_html += f"""
-            <div class="transcript-item" style="opacity: {opacity}; margin-bottom: 8px;">
-                <span style="color: #888; font-size: 11px;">[{trans['timestamp']}]</span>
-                <span style="color: #fff; font-size: 13px;">{trans['text'][:150]}{'...' if len(trans['text']) > 150 else ''}</span>
-            </div>
-            """
-
-        js_code = f"""
-        (function() {{
-            const container = document.getElementById('atc-transcript-container');
-            if (container) {{
-                container.innerHTML = `{transcript_html}`;
-                container.scrollTop = container.scrollHeight;
-            }}
-            return true;
-        }})();
-        """
-
-        self.window.evaluate_js(js_code)
-
     def update_aircraft(self, data):
         """Update aircraft position (stub for now)"""
         # This is a placeholder to prevent the error
@@ -632,7 +503,7 @@ class OpenSkyMapApp:
 
     def flash_channel(self, frequency):
         """Flash channel indicator when recording"""
-        if not self.window or not self.is_multi_channel:
+        if not self.window:
             return
 
         freq_id = frequency.replace('.', '_')
@@ -653,7 +524,7 @@ class OpenSkyMapApp:
 
     def update_worker_status(self, data):
         """Update worker status display"""
-        if not self.window or not self.is_multi_channel:
+        if not self.window:
             return
 
         worker_id = data.get('worker_id', 0)
@@ -681,7 +552,7 @@ class OpenSkyMapApp:
 
     def update_statistics(self, stats):
         """Update statistics display"""
-        if not self.window or not self.is_multi_channel:
+        if not self.window:
             return
 
         queue_size = stats.get('queue_size', 0)
