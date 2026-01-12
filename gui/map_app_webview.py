@@ -104,12 +104,13 @@ class OpenSkyMapApp:
 
         injection_js = f"""
         (function() {{
-            if (window.multiChannelMonitorInjected) {{
-                return true;
-            }}
-            window.multiChannelMonitorInjected = true;
+            try {{
+                if (window.multiChannelMonitorInjected === 'complete') {{
+                    return true;
+                }}
+                window.multiChannelMonitorInjected = 'in_progress';
 
-            console.log('[ATC] Injecting multi-channel monitor...');
+                console.log('[ATC] Injecting multi-channel monitor...');
 
             // Configuration
             const AIRPORT_LAT = {config.AIRPORT_LAT};
@@ -271,42 +272,42 @@ class OpenSkyMapApp:
             `;
             document.head.appendChild(style);
 
-            // Initialize monitoring circle overlay
-            let overlayInitialized = false;
-            let initAttempts = 0;
+                // Initialize monitoring circle overlay
+                let overlayInitialized = false;
+                let initAttempts = 0;
 
-            function tryInitOverlay() {{
-                initAttempts++;
-                console.log('[ATC] Overlay initialization attempt #' + initAttempts);
+                function tryInitOverlay() {{
+                    initAttempts++;
+                    console.log('[ATC] Overlay initialization attempt #' + initAttempts);
 
-                let map = null;
-                if (typeof OLMap !== 'undefined') {{
-                    map = OLMap;
-                }} else if (window.OLMap) {{
-                    map = window.OLMap;
-                }} else {{
-                    // Try to find through the map container
-                    const mapCanvas = document.querySelector('#map_canvas');
-                    if (mapCanvas && mapCanvas._olMap) {{
-                        map = mapCanvas._olMap;
-                    }}
-                }}
-
-                if (!map && initAttempts < 30) {{
-                    setTimeout(tryInitOverlay, 1000);
-                    return;
-                }}
-
-                if (map) {{
-                    console.log('[ATC] Map found! Creating monitoring radius overlay...');
-
-                    try {{
-                        // Create overlay canvas for the monitoring circle
-                        const mapContainer = document.querySelector('#map_container');
-                        if (!mapContainer) {{
-                            console.error('[ATC] Map container not found');
-                            return;
+                    let map = null;
+                    if (typeof OLMap !== 'undefined') {{
+                        map = OLMap;
+                    }} else if (window.OLMap) {{
+                        map = window.OLMap;
+                    }} else {{
+                        // Try to find through the map container
+                        const mapCanvas = document.querySelector('#map_canvas');
+                        if (mapCanvas && mapCanvas._olMap) {{
+                            map = mapCanvas._olMap;
                         }}
+                    }}
+
+                    if (!map && initAttempts < 30) {{
+                        setTimeout(tryInitOverlay, 1000);
+                        return;
+                    }}
+
+                    if (map) {{
+                        console.log('[ATC] Map found! Creating monitoring radius overlay...');
+
+                        try {{
+                            // Create overlay canvas for the monitoring circle
+                            const mapContainer = document.querySelector('#map_container');
+                            if (!mapContainer) {{
+                                console.error('[ATC] Map container not found');
+                                return;
+                            }}
 
                         const overlayCanvas = document.createElement('canvas');
                         overlayCanvas.id = 'atc-overlay-canvas';
@@ -380,18 +381,31 @@ class OpenSkyMapApp:
                             initialized: true
                         }};
 
-                    }} catch (error) {{
-                        console.error('[ATC] Error creating overlay:', error);
-                        if (initAttempts < 30) {{
-                            setTimeout(tryInitOverlay, 1000);
+                        }} catch (error) {{
+                            console.error('[ATC] Error creating overlay:', error);
+                            if (initAttempts < 30) {{
+                                setTimeout(tryInitOverlay, 1000);
+                            }}
                         }}
                     }}
                 }}
+
+                window.atcGetStatus = function() {{
+                    return {{
+                        initialized: overlayInitialized,
+                        attempts: initAttempts
+                    }};
+                }};
+
+                tryInitOverlay();
+
+                window.multiChannelMonitorInjected = 'complete';
+                return true;
+            }} catch (error) {{
+                console.error('[ATC] Injection error:', error);
+                window.multiChannelMonitorInjected = false;
+                return false;
             }}
-
-            tryInitOverlay();
-
-            return true;
         }})();
         """
 
@@ -400,6 +414,10 @@ class OpenSkyMapApp:
             if result:
                 self.overlay_initialized = True
                 success("Multi-channel monitor interface injected")
+                self.check_initialization_status()
+            else:
+                warning("Multi-channel monitor injection returned false; retrying soon")
+                threading.Timer(2.0, self.inject_monitor).start()
         except Exception as e:
             error(f"Error injecting monitor: {e}")
 
