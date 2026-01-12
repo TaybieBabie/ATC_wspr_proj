@@ -93,7 +93,7 @@ BATCH_SIZE = 1  # For batch processing
 # - For testing, start with 1 worker and increase gradually
 # - CPU mode: Can use more workers (4-8) but transcription is much slower
 #
-NUM_TRANSCRIPTION_WORKERS = 6  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
+NUM_TRANSCRIPTION_WORKERS = 5  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
 
 # Audio preprocessing
 OPTIMIZE_FOR_RADIO = True
@@ -117,8 +117,8 @@ MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
 LIVEATC_STREAM_URL = "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=2025071901325928523"  # Replace with your local feed
 
 # Airport/Monitoring Area Configuration
-AIRPORT_LAT = 45.588699  # Your airport latitude (e.g., JFK)
-AIRPORT_LON = -122.5975  # Your airport longitude
+AIRPORT_LAT = 44.8851  # Your airport latitude (45.588699 for pdx, 44.8851 for msp)
+AIRPORT_LON = -93.2144  # Your airport longitude (-122.5975 for , -93.2144 for msp)
 SEARCH_RADIUS_NM = 50  # Nautical miles radius to monitor
 
 # ADS-B Configuration
@@ -151,9 +151,9 @@ LLM_MAX_TRANSMISSIONS = 15
 
 # Advanced Ollama correlator tuning (these were previously hardcoded)
 # Maximum tokens supported by the Ollama model context window
-OLLAMA_CONTEXT_WINDOW_TOKENS = 8192
+OLLAMA_CONTEXT_WINDOW_TOKENS = 12400
 # Tokens reserved for the model's response to avoid truncation
-OLLAMA_MAX_RESPONSE_TOKENS = 4096
+OLLAMA_MAX_RESPONSE_TOKENS = 6400
 # Conservative character-to-token ratio for prompt budgeting
 OLLAMA_CHARS_PER_TOKEN = 4.0
 # Extra buffer added to token estimates for safety
