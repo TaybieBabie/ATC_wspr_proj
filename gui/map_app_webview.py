@@ -27,8 +27,8 @@ class OpenSkyMapApp:
 
         # Channel-specific counters for multi-channel mode
         self.channel_counters = {}
-        for config in atc_monitor.channel_configs:
-            self.channel_counters[config['frequency']] = 0
+        for channel_config in atc_monitor.channel_configs:
+            self.channel_counters[channel_config['frequency']] = 0
         self.num_workers = getattr(
             atc_monitor,
             'transcription_pool',
@@ -85,14 +85,14 @@ class OpenSkyMapApp:
         """Inject multi-channel monitoring interface"""
         # Generate channel list HTML
         channels_html = ""
-        for config in self.atc_monitor.channel_configs:
-            freq = config['frequency']
+        for channel_config in self.atc_monitor.channel_configs:
+            freq = channel_config['frequency']
             freq_id = freq.replace('.', '_')
-            color = config.get('color', '#FFFFFF')
-            stream_url = config.get('stream_url', '')
+            color = channel_config.get('color', '#FFFFFF')
+            stream_url = channel_config.get('stream_url', '')
             channels_html += f"""
             <div class=\"channel-item\" style=\"margin-bottom: 8px; padding: 5px; border-left: 3px solid {color};\">
-                <div style=\"font-weight: bold; font-size: 12px;\">{config['name']}</div>
+                <div style=\"font-weight: bold; font-size: 12px;\">{channel_config['name']}</div>
                 <div style=\"font-size: 11px; color: #888;\">
                     {freq} MHz -
                     <span id=\"channel-count-{freq_id}\" style=\"color: {color};\">0</span> transmissions
