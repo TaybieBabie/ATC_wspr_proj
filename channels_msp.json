@@ -1,0 +1,38 @@
+[
+    {
+        "name": "Saint Paul Tower",
+        "frequency": "119.100",
+        "stream_url": "http://d.liveatc.net/kmsp3_kstp_twr",
+        "color": "#FF0000"
+    },
+    {
+        "name": "Crystal Ground/Tower",
+        "frequency": "120.7/121.6",
+        "stream_url": "http://d.liveatc.net/kmic2_gnd_twr",
+        "color": "#FFA500"
+    },
+    {
+        "name": "Flying Cloud Tower",
+        "frequency": "119.15",
+        "stream_url": "http://d.liveatc.net/kmic2_gnd_twr",
+        "color": "#00FF00"
+    },
+    {
+        "name": "MSP Tower 12L/30R",
+        "frequency": "123.95",
+        "stream_url": "http://d.liveatc.net/kmsp3_twr_12l",
+        "color": "#0000FF"
+    },
+    {
+        "name": "MSP Tower 17/35",
+        "frequency": "123.675",
+        "stream_url": "http://d.liveatc.net/kmsp3_twr_1735",
+        "color": "#FF00FF"
+    },
+    {
+        "name": "MSP Tower 12R/30L, 4/22",
+        "frequency": "126.7",
+        "stream_url": "http://d.liveatc.net/kmsp3_twr_12r",
+        "color": "#00FFFF"
+    }
+]
