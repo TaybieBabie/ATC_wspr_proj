@@ -18,14 +18,14 @@ ANALYSIS_DIR = "analysis/"
 ENABLE_GPU = True
 
 # GPU Configuration
-GPU_BACKEND = "auto"  # Options: "auto", "cuda", "directml", "cpu"
+GPU_BACKEND = "cpu"  # Options: "auto", "cuda", "directml", "cpu"
 PREFER_AMD_GPU = False  # Set to True to prefer AMD over NVIDIA when both available
 DIRECTML_ENABLED = True  # Enable DirectML support for AMD GPUs
 PREFER_ONNX_DIRECTML = True  # Prefer ONNX Runtime DirectML over PyTorch DirectML
 
 # Performance tuning
 USE_FASTER_WHISPER = True  # Use faster-whisper library
-WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU/DirectML
+WHISPER_COMPUTE_TYPE = "int8"  # float16 for GPU, int8 for CPU/DirectML
 BATCH_SIZE = 1  # For batch processing
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -93,7 +93,7 @@ BATCH_SIZE = 1  # For batch processing
 # - For testing, start with 1 worker and increase gradually
 # - CPU mode: Can use more workers (4-8) but transcription is much slower
 #
-NUM_TRANSCRIPTION_WORKERS = 5  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
+NUM_TRANSCRIPTION_WORKERS = 12  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
 
 # Audio preprocessing
 OPTIMIZE_FOR_RADIO = True
@@ -108,7 +108,7 @@ AUDIO_DIR = "audio/raw/"
 # VAD settings
 VAD_THRESHOLD = 0.1  # Adjust based on your audio levels
 SILENCE_DURATION = 3.0  # Seconds of silence before ending recording
-MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
+MIN_TRANSMISSION_LENGTH = 0.45  # Minimum seconds to save a transmission
 
 # Airport/Monitoring Area Configuration
 LOCATION_NAME = "Default"
@@ -152,8 +152,8 @@ POSITION_TOLERANCE = 5  # nautical miles
 
 # LLM Correlator Settings
 ENABLE_LLM_CORRELATION = True
-OLLAMA_MODEL = "gpt-oss:20b"
-OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "mistral:7b"
+OLLAMA_BASE_URL = "http://0.0.0.0:11434"
 # Timeout for Ollama correlation requests (kept higher for large batches)
 OLLAMA_REQUEST_TIMEOUT = 220  # seconds
 LLM_MAX_ADSB_CONTACTS = 100
@@ -161,9 +161,9 @@ LLM_MAX_TRANSMISSIONS = 15
 
 # Advanced Ollama correlator tuning (these were previously hardcoded)
 # Maximum tokens supported by the Ollama model context window
-OLLAMA_CONTEXT_WINDOW_TOKENS = 12400
+OLLAMA_CONTEXT_WINDOW_TOKENS = 6500
 # Tokens reserved for the model's response to avoid truncation
-OLLAMA_MAX_RESPONSE_TOKENS = 6400
+OLLAMA_MAX_RESPONSE_TOKENS = 5500
 # Conservative character-to-token ratio for prompt budgeting
 OLLAMA_CHARS_PER_TOKEN = 4.0
 # Extra buffer added to token estimates for safety

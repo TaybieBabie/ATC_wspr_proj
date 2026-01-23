@@ -71,7 +71,14 @@ class LiveATCRecorder:
             return None
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        freq_str = f"_{frequency.replace('.', 'p')}" if frequency else ""
+        freq_str = ""
+        if frequency:
+            safe_freq = frequency.replace('.', 'p').replace('/', '_').replace(' ', '')
+            if os.sep:
+                safe_freq = safe_freq.replace(os.sep, '_')
+            if os.altsep:
+                safe_freq = safe_freq.replace(os.altsep, '_')
+            freq_str = f"_{safe_freq}"
         filename = os.path.join(AUDIO_DIR, f"transmission_{timestamp}{freq_str}.wav")
 
         try:
@@ -193,7 +200,14 @@ class SystemAudioRecorder:
         if not audio_data:
             return None
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        freq_str = f"_{frequency.replace('.', 'p')}" if frequency else ""
+        freq_str = ""
+        if frequency:
+            safe_freq = frequency.replace('.', 'p').replace('/', '_').replace(' ', '')
+            if os.sep:
+                safe_freq = safe_freq.replace(os.sep, '_')
+            if os.altsep:
+                safe_freq = safe_freq.replace(os.altsep, '_')
+            freq_str = f"_{safe_freq}"
         filename = os.path.join(AUDIO_DIR, f"transmission_{timestamp}{freq_str}.wav")
         try:
             with wave.open(filename, 'wb') as wf:
