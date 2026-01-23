@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import sys
 import time
 import threading
 import queue
@@ -173,89 +175,93 @@ class DebugMonitor:
                        foreground=self.COLORS['fg'], font=('Consolas', 9))
 
     def _run_gui(self):
-        self.window = tk.Tk()
-        self.window.title("LLM Correlator Debug Monitor")
-        self.window.geometry("1200x800")
-        self.window.configure(bg=self.COLORS['bg'])
-        self._configure_dark_theme()
+        try:
+            self.window = tk.Tk()
+            self.window.title("LLM Correlator Debug Monitor")
+            self.window.geometry("1200x800")
+            self.window.configure(bg=self.COLORS['bg'])
+            self._configure_dark_theme()
 
-        main_frame = ttk.Frame(self.window, style='Dark.TFrame')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            main_frame = ttk.Frame(self.window, style='Dark.TFrame')
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        stats_frame = ttk.LabelFrame(main_frame, text="Statistics", style='Dark.TLabelframe')
-        stats_frame.pack(fill=tk.X, pady=(0, 5))
+            stats_frame = ttk.LabelFrame(main_frame, text="Statistics", style='Dark.TLabelframe')
+            stats_frame.pack(fill=tk.X, pady=(0, 5))
 
-        self.stats_labels = {}
-        stats = ["API Calls", "Total Tokens", "Avg Response Time", "Errors", "Context Size"]
-        for i, stat in enumerate(stats):
-            ttk.Label(stats_frame, text=f"{stat}:", style='Dark.TLabel').grid(
-                row=0, column=i*2, padx=5, pady=5)
-            self.stats_labels[stat] = ttk.Label(stats_frame, text="0", style='DarkValue.TLabel')
-            self.stats_labels[stat].grid(row=0, column=i*2+1, padx=5, pady=5)
+            self.stats_labels = {}
+            stats = ["API Calls", "Total Tokens", "Avg Response Time", "Errors", "Context Size"]
+            for i, stat in enumerate(stats):
+                ttk.Label(stats_frame, text=f"{stat}:", style='Dark.TLabel').grid(
+                    row=0, column=i*2, padx=5, pady=5)
+                self.stats_labels[stat] = ttk.Label(stats_frame, text="0", style='DarkValue.TLabel')
+                self.stats_labels[stat].grid(row=0, column=i*2+1, padx=5, pady=5)
 
-        notebook = ttk.Notebook(main_frame, style='Dark.TNotebook')
-        notebook.pack(fill=tk.BOTH, expand=True)
+            notebook = ttk.Notebook(main_frame, style='Dark.TNotebook')
+            notebook.pack(fill=tk.BOTH, expand=True)
 
-        log_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
-        notebook.add(log_frame, text="Activity Log")
+            log_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
+            notebook.add(log_frame, text="Activity Log")
 
-        self.text_widget = scrolledtext.ScrolledText(
-            log_frame, wrap=tk.WORD, font=("Consolas", 10),
-            bg=self.COLORS['bg'], fg=self.COLORS['fg'],
-            insertbackground=self.COLORS['accent'],
-            selectbackground=self.COLORS['border'],
-            selectforeground=self.COLORS['fg'],
-            relief=tk.FLAT, borderwidth=0, padx=10, pady=10
-        )
-        self.text_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+            self.text_widget = scrolledtext.ScrolledText(
+                log_frame, wrap=tk.WORD, font=("Consolas", 10),
+                bg=self.COLORS['bg'], fg=self.COLORS['fg'],
+                insertbackground=self.COLORS['accent'],
+                selectbackground=self.COLORS['border'],
+                selectforeground=self.COLORS['fg'],
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+            )
+            self.text_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        for tag, color in [("timestamp", 'timestamp'), ("prompt", 'prompt'),
-                          ("response", 'response'), ("error", 'error'),
-                          ("info", 'info'), ("warning", 'warning'), ("success", 'success')]:
-            self.text_widget.tag_configure(tag, foreground=self.COLORS[color])
+            for tag, color in [("timestamp", 'timestamp'), ("prompt", 'prompt'),
+                              ("response", 'response'), ("error", 'error'),
+                              ("info", 'info'), ("warning", 'warning'), ("success", 'success')]:
+                self.text_widget.tag_configure(tag, foreground=self.COLORS[color])
 
-        prompt_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
-        notebook.add(prompt_frame, text="Last Prompt")
-        self.prompt_text = scrolledtext.ScrolledText(
-            prompt_frame, wrap=tk.WORD, font=("Consolas", 10),
-            bg=self.COLORS['bg'], fg=self.COLORS['prompt'],
-            insertbackground=self.COLORS['accent'],
-            selectbackground=self.COLORS['border'],
-            selectforeground=self.COLORS['fg'],
-            relief=tk.FLAT, borderwidth=0, padx=10, pady=10
-        )
-        self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+            prompt_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
+            notebook.add(prompt_frame, text="Last Prompt")
+            self.prompt_text = scrolledtext.ScrolledText(
+                prompt_frame, wrap=tk.WORD, font=("Consolas", 10),
+                bg=self.COLORS['bg'], fg=self.COLORS['prompt'],
+                insertbackground=self.COLORS['accent'],
+                selectbackground=self.COLORS['border'],
+                selectforeground=self.COLORS['fg'],
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+            )
+            self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        response_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
-        notebook.add(response_frame, text="Last Response")
-        self.response_text = scrolledtext.ScrolledText(
-            response_frame, wrap=tk.WORD, font=("Consolas", 10),
-            bg=self.COLORS['bg'], fg=self.COLORS['response'],
-            insertbackground=self.COLORS['accent'],
-            selectbackground=self.COLORS['border'],
-            selectforeground=self.COLORS['fg'],
-            relief=tk.FLAT, borderwidth=0, padx=10, pady=10
-        )
-        self.response_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+            response_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
+            notebook.add(response_frame, text="Last Response")
+            self.response_text = scrolledtext.ScrolledText(
+                response_frame, wrap=tk.WORD, font=("Consolas", 10),
+                bg=self.COLORS['bg'], fg=self.COLORS['response'],
+                insertbackground=self.COLORS['accent'],
+                selectbackground=self.COLORS['border'],
+                selectforeground=self.COLORS['fg'],
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+            )
+            self.response_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        button_frame = ttk.Frame(main_frame, style='Dark.TFrame')
-        button_frame.pack(fill=tk.X, pady=(5, 0))
+            button_frame = ttk.Frame(main_frame, style='Dark.TFrame')
+            button_frame.pack(fill=tk.X, pady=(5, 0))
 
-        ttk.Button(button_frame, text="Clear Log", command=self._clear_log,
-                  style='Dark.TButton').pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Save Log", command=self._save_log,
-                  style='Dark.TButton').pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Clear Log", command=self._clear_log,
+                      style='Dark.TButton').pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Save Log", command=self._save_log,
+                      style='Dark.TButton').pack(side=tk.LEFT, padx=5)
 
-        self.auto_scroll_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(button_frame, text="Auto-scroll", variable=self.auto_scroll_var,
-                       style='Dark.TCheckbutton').pack(side=tk.LEFT, padx=5)
+            self.auto_scroll_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(button_frame, text="Auto-scroll", variable=self.auto_scroll_var,
+                           style='Dark.TCheckbutton').pack(side=tk.LEFT, padx=5)
 
-        self.status_label = ttk.Label(button_frame, text="● Ready", style='DarkValue.TLabel')
-        self.status_label.pack(side=tk.RIGHT, padx=10)
+            self.status_label = ttk.Label(button_frame, text="● Ready", style='DarkValue.TLabel')
+            self.status_label.pack(side=tk.RIGHT, padx=10)
 
-        self.running = True
-        self._process_queue()
-        self.window.mainloop()
+            self.running = True
+            self._process_queue()
+            self.window.mainloop()
+        except Exception as exc:
+            self.running = False
+            print(f"[ERROR] Debug monitor failed to start: {exc}")
 
     def _process_queue(self):
         try:
@@ -514,9 +520,17 @@ class OllamaCorrelator:
         self._response_times: List[float] = []
 
         self.debug_monitor = None
-        if enable_debug_monitor and HAS_TK:
-            self.debug_monitor = DebugMonitor()
-            time.sleep(OLLAMA_DEBUG_MONITOR_DELAY)
+        if enable_debug_monitor:
+            if not HAS_TK:
+                if sys.platform.startswith("linux"):
+                    print("[WARN] Tkinter not available; install python3-tk to enable the debug monitor.")
+                else:
+                    print("[WARN] Tkinter not available; debug monitor disabled.")
+            elif not _has_display():
+                print("[WARN] No GUI display detected (DISPLAY/WAYLAND_DISPLAY); debug monitor disabled.")
+            else:
+                self.debug_monitor = DebugMonitor()
+                time.sleep(OLLAMA_DEBUG_MONITOR_DELAY)
 
         system_prompt = self.context_builder.build_system_prompt()
         self.rolling_context.set_system_prompt(system_prompt)
@@ -797,6 +811,12 @@ def build_atc_transmission(
         audio_duration=audio_duration,
         transcription_delay=transcription_delay,
     )
+
+
+def _has_display() -> bool:
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
 
 
 __all__ = [
