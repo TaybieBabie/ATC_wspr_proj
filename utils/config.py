@@ -18,14 +18,14 @@ ANALYSIS_DIR = "analysis/"
 ENABLE_GPU = True
 
 # GPU Configuration
-GPU_BACKEND = "cpu"  # Options: "auto", "cuda", "directml", "cpu"
+GPU_BACKEND = "cuda"  # Options: "auto", "cuda", "directml", "cpu"
 PREFER_AMD_GPU = False  # Set to True to prefer AMD over NVIDIA when both available
 DIRECTML_ENABLED = True  # Enable DirectML support for AMD GPUs
 PREFER_ONNX_DIRECTML = True  # Prefer ONNX Runtime DirectML over PyTorch DirectML
 
 # Performance tuning
 USE_FASTER_WHISPER = True  # Use faster-whisper library
-WHISPER_COMPUTE_TYPE = "int8"  # float16 for GPU, int8 for CPU/DirectML
+WHISPER_COMPUTE_TYPE = "float16"  # float16 for GPU, int8 for CPU/DirectML
 BATCH_SIZE = 1  # For batch processing
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -93,7 +93,7 @@ BATCH_SIZE = 1  # For batch processing
 # - For testing, start with 1 worker and increase gradually
 # - CPU mode: Can use more workers (4-8) but transcription is much slower
 #
-NUM_TRANSCRIPTION_WORKERS = 12  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
+NUM_TRANSCRIPTION_WORKERS = 4 # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
 
 # Audio preprocessing
 OPTIMIZE_FOR_RADIO = True

@@ -49,6 +49,7 @@ class OpenSkyMapApp:
 
     def run(self):
         """Run the application"""
+        # Create window with the OpenSky map URL
         window_title = 'Multi-Channel ATC Monitor'
         self.window = webview.create_window(
             window_title,
@@ -57,12 +58,15 @@ class OpenSkyMapApp:
             height=900
         )
 
+        # Set up event handlers
         self.window.events.loaded += self.on_page_loaded
         self.window.events.closed += self.on_closed
 
+        # Start update thread
         update_thread = threading.Thread(target=self.process_updates, daemon=True)
         update_thread.start()
 
+        # Start webview (blocks until window is closed)
         webview.start(debug=True)
 
     def on_page_loaded(self):
@@ -72,6 +76,7 @@ class OpenSkyMapApp:
         self.overlay_initialized = False
         self.inject_attempts = 0
 
+        # Start injection retries as soon as the page is ready.
         self._schedule_injection_retry(1.0, "page loaded")
         self._start_injection_watchdog()
 
@@ -151,14 +156,15 @@ class OpenSkyMapApp:
         for channel_config in self.atc_monitor.channel_configs:
             freq = channel_config['frequency']
             freq_id = freq.replace('.', '_')
-            color = channel_config.get('color', '#FFFFFF')
+            color = channel_config.get('color', '#00D4FF')
             stream_url = channel_config.get('stream_url', '')
             channels_html += f"""
-            <div class="channel-item" data-freq-id="{freq_id}" style="margin-bottom: 6px; padding: 6px 8px; background: rgba(255,255,255,0.03); clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%); border-left: 2px solid {color};">
-                <div style="font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">{channel_config['name']}</div>
-                <div style="font-size: 10px; color: #888; margin-top: 3px; font-family: 'Courier New', monospace;">
-                    {freq} MHz | TX: <span id="channel-count-{freq_id}" style="color: {color}; font-weight: bold;">0</span>
-                    <button id="mute-{freq_id}" class="mute-btn" data-freq-id="{freq_id}" style="margin-left: 8px; padding: 2px 6px; font-size: 9px; background: rgba(255,255,255,0.1); border: 1px solid {color}; color: {color}; cursor: pointer; clip-path: polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 0 100%);">UNMUTE</button>
+            <div class="channel-item" style="margin-bottom: 1px; padding: 8px; background: #0A0A0A; border-left: 2px solid {color};">
+                <div style="font-weight: 600; font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;">{channel_config['name']}</div>
+                <div style="font-size: 10px; color: #6B9DB5; margin-top: 4px;">
+                    {freq} MHz |
+                    <span id="channel-count-{freq_id}" style="color: {color}; font-weight: 600;">0</span> TX
+                    <button id="mute-{freq_id}" class="mute-btn" onclick="toggleMute('{freq_id}')">UNMUTE</button>
                     <audio id="audio-{freq_id}" data-stream="{stream_url}" preload="none" style="display:none;"></audio>
                 </div>
             </div>
@@ -173,14 +179,12 @@ class OpenSkyMapApp:
                 if (window.multiChannelMonitorInjected === 'complete') {{
                     return true;
                 }}
-
-                // Remove any existing panels to prevent duplicates
-                const existingPanel = document.getElementById('multi-channel-panel');
-                const existingTranscript = document.getElementById('multi-transcript-container');
-                if (existingPanel) existingPanel.remove();
-                if (existingTranscript) existingTranscript.remove();
-
+                if (document.getElementById('multi-channel-panel')) {{
+                    window.multiChannelMonitorInjected = 'complete';
+                    return true;
+                }}
                 window.multiChannelMonitorInjected = 'in_progress';
+
                 console.log('[ATC] Injecting multi-channel monitor...');
 
                 // Configuration
@@ -189,16 +193,56 @@ class OpenSkyMapApp:
                 const SEARCH_RADIUS_NM = {config.SEARCH_RADIUS_NM};
                 const RADIUS_METERS = SEARCH_RADIUS_NM * 1852;
 
-                // Draggable/Resizable utility
-                window.makeDraggable = function(element, handle) {{
-                    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
-                    handle.style.cursor = 'move';
+                // Auto-toggle labels (L) and extended labels (O)
+                setTimeout(() => {{
+                    try {{
+                        console.log('[ATC] Attempting to toggle labels...');
 
+                        // Toggle 'L' (Labels) button
+                        const lButton = document.getElementById('L');
+                        if (lButton) {{
+                            if (!lButton.classList.contains('activeButton')) {{
+                                lButton.click();
+                                console.log('[ATC] Labels (L) toggled ON');
+                            }} else {{
+                                console.log('[ATC] Labels (L) already active');
+                            }}
+                        }} else {{
+                            console.log('[ATC] Labels button (L) not found');
+                        }}
+
+                        // Toggle 'O' (Extended Labels) button
+                        const oButton = document.getElementById('O');
+                        if (oButton) {{
+                            if (!oButton.classList.contains('activeButton')) {{
+                                oButton.click();
+                                console.log('[ATC] Extended labels (O) toggled ON');
+                            }} else {{
+                                console.log('[ATC] Extended labels (O) already active');
+                            }}
+                        }} else {{
+                            console.log('[ATC] Extended labels button (O) not found');
+                        }}
+                    }} catch (e) {{
+                        console.error('[ATC] Error toggling labels:', e);
+                    }}
+                }}, 2000);
+
+                // Draggable and resizable functionality
+                function makeDraggable(element, handleSelector) {{
+                    const handle = handleSelector ? element.querySelector(handleSelector) : element;
+                    if (!handle) return;
+
+                    let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+
+                    handle.style.cursor = 'move';
                     handle.onmousedown = dragMouseDown;
 
                     function dragMouseDown(e) {{
                         e = e || window.event;
                         e.preventDefault();
+                        e.stopPropagation();
+                        handle.style.cursor = 'move';
                         pos3 = e.clientX;
                         pos4 = e.clientY;
                         document.onmouseup = closeDragElement;
@@ -219,13 +263,15 @@ class OpenSkyMapApp:
                     }}
 
                     function closeDragElement() {{
+                        handle.style.cursor = 'move';
                         document.onmouseup = null;
                         document.onmousemove = null;
                     }}
-                }};
+                }}
 
-                window.makeResizable = function(element) {{
+                function makeResizable(element) {{
                     const resizer = document.createElement('div');
+                    resizer.className = 'resizer';
                     resizer.style.cssText = `
                         position: absolute;
                         right: 0;
@@ -233,117 +279,144 @@ class OpenSkyMapApp:
                         width: 20px;
                         height: 20px;
                         cursor: nwse-resize;
-                        background: linear-gradient(135deg, transparent 0%, transparent 50%, rgba(255,255,255,0.3) 50%, rgba(255,255,255,0.3) 100%);
-                        clip-path: polygon(100% 0, 100% 100%, 0 100%);
+                        z-index: 10;
+                        opacity: 0.3;
+                        transition: opacity 0.2s;
                     `;
+
+                    resizer.innerHTML = `
+                        <svg width="20" height="20" style="position: absolute; right: 0; bottom: 0;">
+                            <line x1="20" y1="10" x2="10" y2="20" stroke="#00D4FF" stroke-width="2"/>
+                            <line x1="20" y1="15" x2="15" y2="20" stroke="#00D4FF" stroke-width="2"/>
+                            <line x1="20" y1="5" x2="5" y2="20" stroke="#00D4FF" stroke-width="2"/>
+                        </svg>
+                    `;
+
                     element.appendChild(resizer);
 
-                    let startX, startY, startWidth, startHeight;
+                    element.addEventListener('mouseenter', () => {{
+                        resizer.style.opacity = '0.6';
+                    }});
+                    element.addEventListener('mouseleave', () => {{
+                        if (!isResizing) resizer.style.opacity = '0.3';
+                    }});
 
-                    resizer.addEventListener('mousedown', initResize, false);
+                    let startX, startY, startWidth, startHeight;
+                    let isResizing = false;
+
+                    resizer.addEventListener('mousedown', initResize);
 
                     function initResize(e) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        isResizing = true;
+                        resizer.style.opacity = '1';
                         startX = e.clientX;
                         startY = e.clientY;
                         startWidth = parseInt(document.defaultView.getComputedStyle(element).width, 10);
                         startHeight = parseInt(document.defaultView.getComputedStyle(element).height, 10);
-                        document.addEventListener('mousemove', resize, false);
-                        document.addEventListener('mouseup', stopResize, false);
+                        document.addEventListener('mousemove', resize);
+                        document.addEventListener('mouseup', stopResize);
                     }}
 
                     function resize(e) {{
-                        element.style.width = (startWidth + e.clientX - startX) + 'px';
-                        element.style.height = (startHeight + e.clientY - startY) + 'px';
+                        if (!isResizing) return;
+                        const width = startWidth + e.clientX - startX;
+                        const height = startHeight + e.clientY - startY;
+                        element.style.width = Math.max(280, width) + 'px';
+                        element.style.height = Math.max(200, height) + 'px';
+                        element.style.maxHeight = Math.max(200, height) + 'px';
                     }}
 
                     function stopResize() {{
-                        document.removeEventListener('mousemove', resize, false);
-                        document.removeEventListener('mouseup', stopResize, false);
+                        isResizing = false;
+                        resizer.style.opacity = '0.3';
+                        document.removeEventListener('mousemove', resize);
+                        document.removeEventListener('mouseup', stopResize);
                     }}
-                }};
+                }}
 
-                // Create main control panel
+                // Create main panel
                 const panel = document.createElement('div');
                 panel.id = 'multi-channel-panel';
                 panel.style.cssText = `
                     position: fixed;
                     top: 80px;
                     right: 20px;
-                    background: linear-gradient(135deg, rgba(10, 10, 15, 0.95) 0%, rgba(20, 20, 30, 0.95) 100%);
-                    color: #00ff00;
+                    background: #000000;
+                    color: #FFFFFF;
                     padding: 0;
-                    font-family: 'Courier New', monospace;
+                    border: 2px solid #00D4FF;
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
                     z-index: 10000;
-                    box-shadow: 0 0 0 2px #00ff00, 0 0 20px rgba(0,255,0,0.3), inset 0 0 20px rgba(0,255,0,0.05);
+                    box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
                     width: 340px;
-                    max-height: 700px;
+                    max-height: 600px;
                     overflow: hidden;
-                    clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%);
+                    display: flex;
+                    flex-direction: column;
                 `;
 
                 panel.innerHTML = `
-                    <div id="panel-header" style="background: rgba(0,255,0,0.1); padding: 12px 15px; border-bottom: 1px solid #00ff00; cursor: move; user-select: none; clip-path: polygon(0 0, calc(100% - 15px) 0, 100% 15px, 100% 100%, 0 100%);">
-                        <div style="font-size: 14px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;">
-                            ◢ ATC MONITOR ◣
-                        </div>
-                        <div style="font-size: 9px; color: #00aa00; margin-top: 3px; letter-spacing: 1px;">
-                            MULTI-CHANNEL SURVEILLANCE
-                        </div>
+                    <div class="drag-handle" style="
+                        padding: 12px 16px;
+                        background: linear-gradient(90deg, #000000 0%, #001F2B 100%);
+                        border-bottom: 2px solid #00D4FF;
+                        user-select: none;
+                    ">
+                        <h3 style="margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #00D4FF;">
+                            ▶ ATC MONITOR
+                        </h3>
                     </div>
 
-                    <div style="padding: 15px; max-height: 580px; overflow-y: auto;" id="panel-content">
-                        <div style="margin-bottom: 15px; padding: 10px; background: rgba(0,255,0,0.05); border: 1px solid rgba(0,255,0,0.3); clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);">
-                            <div style="font-size: 10px; margin-bottom: 5px; color: #00ff00;">
-                                <span style="opacity: 0.7;">STATUS:</span> 
-                                <span id="monitor-status" style="color: #00ff00;">◉ ACTIVE</span>
-                            </div>
-                            <div style="font-size: 10px; margin-bottom: 5px; color: #00ff00;">
-                                <span style="opacity: 0.7;">AREA:</span> {config.LOCATION_NAME} ({config.SEARCH_RADIUS_NM}NM)
-                            </div>
-                            <div style="font-size: 10px; margin-bottom: 5px; color: #00ff00;">
-                                <span style="opacity: 0.7;">TOTAL TX:</span> 
-                                <span id="total-transmissions" style="font-weight: bold;">0</span>
-                            </div>
-                            <div style="font-size: 10px; color: #00ff00;">
-                                <span style="opacity: 0.7;">QUEUE:</span> 
-                                <span id="queue-size">0</span> | 
-                                <span style="opacity: 0.7;">WORKERS:</span> 
-                                <span id="workers-busy">0</span>/{self.num_workers}
+                    <div style="flex: 1; overflow-y: auto; padding: 0;">
+                        <div style="padding: 12px; background: #0A0A0A; border-bottom: 1px solid #1A1A1A;">
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; font-size: 10px;">
+                                <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">STATUS</div>
+                                <div id="monitor-status" style="color: #00FF7F; font-weight: 600;">◉ ACTIVE</div>
+
+                                <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">AREA</div>
+                                <div style="color: #FFFFFF;">{config.LOCATION_NAME} | {config.SEARCH_RADIUS_NM} NM</div>
+
+                                <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">TOTAL TX</div>
+                                <div><span id="total-transmissions" style="color: #00D4FF; font-weight: 600;">0</span></div>
+
+                                <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">QUEUE</div>
+                                <div>
+                                    <span id="queue-size" style="color: #00D4FF; font-weight: 600;">0</span> | 
+                                    <span style="color: #6B9DB5;">WORKERS:</span> 
+                                    <span id="workers-busy" style="color: #00D4FF; font-weight: 600;">0</span><span style="color: #6B9DB5;">/{self.num_workers}</span>
+                                </div>
                             </div>
                         </div>
 
-                        <div style="margin-bottom: 4px; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #00ff00; opacity: 0.8;">
-                            ▸ CHANNELS [{len(self.atc_monitor.channel_configs)}]
+                        <div style="padding: 12px 16px; background: #000000; border-bottom: 2px solid #00D4FF;">
+                            <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #00D4FF; margin-bottom: 8px;">CHANNELS [{len(self.atc_monitor.channel_configs)}]</div>
                         </div>
-                        <div id="channel-list" style="margin-bottom: 15px;">
+                        <div id="channel-list">
                             {channels_html}
                         </div>
 
-                        <div style="margin-bottom: 4px; font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #00ff00; opacity: 0.8;">
-                            ▸ WORKERS
+                        <div style="padding: 12px 16px; background: #000000; border-top: 1px solid #1A1A1A; border-bottom: 2px solid #00D4FF; margin-top: 1px;">
+                            <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #00D4FF; margin-bottom: 8px;">WORKERS</div>
                         </div>
-                        <div id="worker-status" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;">
-                            {"".join(f'''<div id="worker-{i}" class="worker-box" style="padding: 8px 4px; background: rgba(0,255,0,0.1); text-align: center; font-size: 9px; clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%); border: 1px solid rgba(0,255,0,0.3);">
-                                <div style="font-weight: bold;">W{i}</div>
-                                <div id="worker-{i}-status" style="color: #00aa00; margin-top: 2px;">IDLE</div>
-                            </div>''' for i in range(self.num_workers))}
+                        <div id="worker-status" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #1A1A1A; padding: 0;">
+                            {"".join(f'<div id="worker-{i}" class="worker-box" style="padding: 10px; background: #0A0A0A; text-align: center; font-size: 9px; letter-spacing: 0.5px; border: 1px solid #1A1A1A;"><div style="color: #6B9DB5; text-transform: uppercase; margin-bottom: 4px;">W{i}</div><div style="color: #00FF7F; font-weight: 600;">IDLE</div></div>' for i in range(self.num_workers))}
                         </div>
                     </div>
                 `;
 
                 document.body.appendChild(panel);
+                makeDraggable(panel, '.drag-handle');
+                makeResizable(panel);
 
-                // Make panel draggable and resizable
-                const panelHeader = document.getElementById('panel-header');
-                window.makeDraggable(panel, panelHeader);
-                window.makeResizable(panel);
-
-                // Toggle audio playback
+                // Toggle audio playback for a channel without affecting recording
                 window.toggleMute = function(freqId) {{
                     const audioEl = document.getElementById('audio-' + freqId);
                     const btnEl = document.getElementById('mute-' + freqId);
-                    if (!audioEl || !btnEl) return;
-
+                    if (!audioEl || !btnEl) {{
+                        return;
+                    }}
                     if (audioEl.paused) {{
                         const streamUrl = audioEl.getAttribute('data-stream');
                         if (audioEl.src !== streamUrl) {{
@@ -352,22 +425,15 @@ class OpenSkyMapApp:
                         }}
                         audioEl.play();
                         btnEl.textContent = 'MUTE';
-                        btnEl.style.background = 'rgba(255,0,0,0.2)';
+                        btnEl.style.background = '#FF4444';
                     }} else {{
                         audioEl.pause();
                         audioEl.removeAttribute('src');
                         audioEl.load();
                         btnEl.textContent = 'UNMUTE';
-                        btnEl.style.background = 'rgba(255,255,255,0.1)';
+                        btnEl.style.background = '#1A1A1A';
                     }}
                 }};
-
-                // Attach mute button handlers
-                document.querySelectorAll('.mute-btn').forEach(btn => {{
-                    btn.addEventListener('click', function() {{
-                        window.toggleMute(this.getAttribute('data-freq-id'));
-                    }});
-                }});
 
                 // Create transcript display
                 const transcriptContainer = document.createElement('div');
@@ -376,67 +442,96 @@ class OpenSkyMapApp:
                     position: fixed;
                     bottom: 20px;
                     left: 20px;
-                    width: 900px;
-                    max-width: calc(100vw - 400px);
-                    background: linear-gradient(135deg, rgba(10, 10, 15, 0.95) 0%, rgba(20, 20, 30, 0.95) 100%);
-                    color: #00ff00;
+                    right: 380px;
+                    max-width: 900px;
+                    background: #000000;
+                    color: #FFFFFF;
                     padding: 0;
-                    font-family: 'Courier New', monospace;
+                    border: 2px solid #00D4FF;
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
                     z-index: 9999;
-                    box-shadow: 0 0 0 2px #00ff00, 0 0 20px rgba(0,255,0,0.3), inset 0 0 20px rgba(0,255,0,0.05);
-                    max-height: 280px;
+                    box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+                    max-height: 250px;
                     overflow: hidden;
-                    clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%);
+                    display: flex;
+                    flex-direction: column;
                 `;
 
                 transcriptContainer.innerHTML = `
-                    <div id="transcript-header" style="background: rgba(0,255,0,0.1); padding: 10px 15px; border-bottom: 1px solid #00ff00; cursor: move; user-select: none; clip-path: polygon(0 0, calc(100% - 15px) 0, 100% 15px, 100% 100%, 0 100%);">
-                        <div style="font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;">
-                            ◢ LIVE TRANSMISSIONS ◣
-                        </div>
+                    <div class="transcript-drag-handle" style="
+                        padding: 10px 16px;
+                        background: linear-gradient(90deg, #000000 0%, #001F2B 100%);
+                        border-bottom: 2px solid #00D4FF;
+                        user-select: none;
+                    ">
+                        <strong style="font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: #00D4FF;">▶ TRANSMISSIONS</strong>
                     </div>
-                    <div id="transcript-content" style="padding: 12px 15px; max-height: 200px; overflow-y: auto;">
-                        <div style="text-align: center; opacity: 0.5; font-size: 11px;">AWAITING TRANSMISSION DATA...</div>
-                    </div>
+                    <div id="transcript-content" style="
+                        flex: 1;
+                        overflow-y: auto;
+                        padding: 16px;
+                        text-align: center;
+                        color: #6B9DB5;
+                        font-size: 11px;
+                        letter-spacing: 0.5px;
+                    ">AWAITING TRANSMISSION DATA...</div>
                 `;
 
                 document.body.appendChild(transcriptContainer);
-
-                // Make transcript draggable and resizable
-                const transcriptHeader = document.getElementById('transcript-header');
-                window.makeDraggable(transcriptContainer, transcriptHeader);
-                window.makeResizable(transcriptContainer);
+                makeDraggable(transcriptContainer, '.transcript-drag-handle');
+                makeResizable(transcriptContainer);
 
                 // Add custom styles
                 const style = document.createElement('style');
                 style.textContent = `
-                    #panel-content::-webkit-scrollbar,
+                    #multi-channel-panel > div:last-child::-webkit-scrollbar,
                     #transcript-content::-webkit-scrollbar {{
                         width: 8px;
                     }}
 
-                    #panel-content::-webkit-scrollbar-track,
+                    #multi-channel-panel > div:last-child::-webkit-scrollbar-track,
                     #transcript-content::-webkit-scrollbar-track {{
-                        background: rgba(0,255,0,0.05);
+                        background: #0A0A0A;
                     }}
 
-                    #panel-content::-webkit-scrollbar-thumb,
+                    #multi-channel-panel > div:last-child::-webkit-scrollbar-thumb,
                     #transcript-content::-webkit-scrollbar-thumb {{
-                        background: rgba(0,255,0,0.3);
-                        border: 1px solid rgba(0,255,0,0.5);
+                        background: #00D4FF;
                     }}
 
-                    #panel-content::-webkit-scrollbar-thumb:hover,
+                    #multi-channel-panel > div:last-child::-webkit-scrollbar-thumb:hover,
                     #transcript-content::-webkit-scrollbar-thumb:hover {{
-                        background: rgba(0,255,0,0.5);
+                        background: #00A8CC;
                     }}
 
                     .worker-box {{
                         transition: all 0.2s ease;
                     }}
 
-                    .channel-item {{
-                        transition: background 0.3s ease;
+                    .mute-btn {{
+                        margin-left: 8px;
+                        padding: 2px 8px;
+                        font-size: 8px;
+                        cursor: pointer;
+                        background: #1A1A1A;
+                        border: 1px solid #00D4FF;
+                        color: #00D4FF;
+                        font-weight: 600;
+                        letter-spacing: 0.5px;
+                        transition: all 0.2s;
+                    }}
+
+                    .mute-btn:hover {{
+                        background: #00D4FF;
+                        color: #000000;
+                    }}
+
+                    .drag-handle, .transcript-drag-handle {{
+                        transition: background 0.2s;
+                    }}
+
+                    .drag-handle:hover, .transcript-drag-handle:hover {{
+                        background: linear-gradient(90deg, #001F2B 0%, #003A52 100%) !important;
                     }}
 
                     @keyframes pulse {{
@@ -444,24 +539,20 @@ class OpenSkyMapApp:
                         50% {{ opacity: 0.6; }}
                     }}
 
-                    @keyframes slideIn {{
+                    @keyframes fadeInUp {{
                         from {{
                             opacity: 0;
-                            transform: translateX(-20px);
+                            transform: translateY(10px);
                         }}
                         to {{
                             opacity: 1;
-                            transform: translateX(0);
+                            transform: translateY(0);
                         }}
-                    }}
-
-                    .transcript-item {{
-                        animation: slideIn 0.3s ease-out;
                     }}
                 `;
                 document.head.appendChild(style);
 
-                // Initialize monitoring circle overlay
+                // Initialize monitoring circle overlay - CANVAS APPROACH
                 let overlayInitialized = false;
                 let initAttempts = 0;
 
@@ -496,9 +587,10 @@ class OpenSkyMapApp:
                                 return;
                             }}
 
-                            // Remove existing overlay if present
                             const existingOverlay = document.getElementById('atc-overlay-canvas');
-                            if (existingOverlay) existingOverlay.remove();
+                            if (existingOverlay) {{
+                                existingOverlay.remove();
+                            }}
 
                             const overlayCanvas = document.createElement('canvas');
                             overlayCanvas.id = 'atc-overlay-canvas';
@@ -515,6 +607,9 @@ class OpenSkyMapApp:
                             const mapCanvas = mapContainer.querySelector('#map_canvas');
                             if (mapCanvas) {{
                                 mapCanvas.appendChild(overlayCanvas);
+                            }} else {{
+                                console.error('[ATC] Map canvas not found');
+                                return;
                             }}
 
                             function drawMonitoringCircle() {{
@@ -535,16 +630,16 @@ class OpenSkyMapApp:
                                 const resolution = map.getView().getResolution();
                                 const radiusPixels = RADIUS_METERS / resolution;
 
-                                // Draw the circle
-                                ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-                                ctx.lineWidth = 3;
-                                ctx.setLineDash([10, 10]);
+                                // Draw with cyan/light blue theme
+                                ctx.strokeStyle = 'rgba(190, 0, 0, 0.8)';
+                                ctx.lineWidth = 2;
+                                ctx.setLineDash([8, 8]);
 
                                 ctx.beginPath();
                                 ctx.arc(centerPixel[0], centerPixel[1], radiusPixels, 0, 2 * Math.PI);
                                 ctx.stroke();
 
-                                ctx.fillStyle = 'rgba(0, 255, 0, 0.05)';
+                                ctx.fillStyle = 'rgba(255, 0, 0, 0.05)';
                                 ctx.fill();
                             }}
 
@@ -664,7 +759,7 @@ class OpenSkyMapApp:
         self._apply_transmission_batch([data])
 
     def _apply_transmission_batch(self, batch):
-        """Apply a batch of transmissions to the UI - FIXED to prevent layering"""
+        """Apply a batch of transmissions to the UI."""
         if not self.window or not self.overlay_initialized:
             return
 
@@ -680,84 +775,60 @@ class OpenSkyMapApp:
         while len(self.displayed_transcripts) > self.max_displayed_transcripts:
             self.displayed_transcripts.pop(0)
 
-        # Build transcript HTML
         transcript_html = ""
         for trans in self.displayed_transcripts:
-            color = trans.get('color', '#00ff00')
+            color = trans.get('color', '#00D4FF')
             timestamp = trans.get('timestamp', datetime.now().isoformat())
-            time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp[:8]
-
-            transcript_text = trans.get('transcript', '')[:200]
-            if len(trans.get('transcript', '')) > 200:
-                transcript_text += '...'
+            time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp
 
             transcript_html += f"""
-            <div class="transcript-item" style="margin-bottom: 8px; padding: 8px 10px; border-left: 2px solid {color}; background: rgba(0,255,0,0.03); clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);">
-                <div style="font-size: 9px; color: #00aa00; margin-bottom: 4px; display: flex; justify-content: space-between;">
-                    <span>[{time_str}] <span style="color: {color}; font-weight: bold;">{trans.get('channel', 'UNKNOWN')}</span></span>
-                    <span style="opacity: 0.7;">W{trans.get('worker_id', '?')}</span>
+            <div style="margin-bottom: 1px; padding: 10px; background: #0A0A0A; border-left: 2px solid {color}; animation: fadeInUp 0.3s ease-out;">
+                <div style="font-size: 9px; color: #6B9DB5; margin-bottom: 6px; letter-spacing: 0.5px; text-transform: uppercase;">
+                    [{time_str}] 
+                    <span style="color: {color}; font-weight: 700;">{trans.get('channel', 'Unknown')}</span>
+                    <span style="float: right;">W{trans.get('worker_id', '?')}</span>
                 </div>
-                <div style="font-size: 11px; color: #00ff00; font-family: monospace;">
-                    {transcript_text}
+                <div style="font-size: 11px; color: #FFFFFF; line-height: 1.4; font-family: 'Consolas', 'Monaco', monospace;">
+                    {trans.get('transcript', '')[:200]}{'...' if len(trans.get('transcript', '')) > 200 else ''}
                 </div>
             </div>
             """
 
-        # Build frequency updates
-        freq_updates = {}
-        for freq in updated_freqs:
-            freq_updates[freq.replace('.', '_')] = self.channel_counters.get(freq, 0)
+        freq_updates = ", ".join(
+            [f"'{freq.replace('.', '_')}': {self.channel_counters.get(freq, 0)}" for freq in updated_freqs]
+        )
 
-        # Use JSON to safely pass data
-        freq_updates_json = json.dumps(freq_updates)
-        transcript_html_escaped = transcript_html.replace('`', '\\`').replace('${', '\\${')
-
-        # FIXED: Update DOM elements directly instead of replacing innerHTML repeatedly
         js_code = f"""
         (function() {{
-            try {{
-                const updates = {freq_updates_json};
-
-                // Update frequency counters
-                for (const [freqId, count] of Object.entries(updates)) {{
-                    const counterEl = document.getElementById('channel-count-' + freqId);
-                    if (counterEl && counterEl.textContent !== count.toString()) {{
-                        counterEl.textContent = count;
-                    }}
+            const updates = {{{freq_updates}}};
+            for (const [freq, count] of Object.entries(updates)) {{
+                const counterEl = document.getElementById('channel-count-' + freq);
+                if (counterEl) {{
+                    counterEl.textContent = count;
                 }}
+            }}
 
-                // Update total transmissions
-                const totalEl = document.getElementById('total-transmissions');
-                const totalCount = {sum(self.channel_counters.values())};
-                if (totalEl && totalEl.textContent !== totalCount.toString()) {{
-                    totalEl.textContent = totalCount;
-                }}
+            const totalEl = document.getElementById('total-transmissions');
+            if (totalEl) {{
+                totalEl.textContent = {sum(self.channel_counters.values())};
+            }}
 
-                // Update transcript content (only if changed)
-                const transcriptContent = document.getElementById('transcript-content');
-                if (transcriptContent) {{
-                    const newContent = `{transcript_html_escaped}`;
-                    if (transcriptContent.innerHTML !== newContent) {{
-                        transcriptContent.innerHTML = newContent;
-                        transcriptContent.scrollTop = transcriptContent.scrollHeight;
-                    }}
-                }}
-
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error updating UI:', error);
-                return false;
+            const contentEl = document.getElementById('transcript-content');
+            if (contentEl) {{
+                contentEl.innerHTML = `{transcript_html}`;
+                contentEl.scrollTop = contentEl.scrollHeight;
             }}
         }})();
         """
 
         try:
             self.window.evaluate_js(js_code)
-            latest = batch[-1]
-            info(
-                f"[{latest.get('channel', 'Unknown')}] TX #{sum(self.channel_counters.values())}: {latest.get('transcript', '')[:50]}...")
         except Exception as e:
-            error(f"Error applying transmission batch: {e}")
+            error(f"Error updating UI: {e}")
+
+        latest = batch[-1]
+        info(
+            f"[{latest.get('channel', 'Unknown')}] Transmission #{sum(self.channel_counters.values())}: {latest.get('transcript', '')[:50]}...")
 
     def update_aircraft(self, data):
         """Update aircraft position (stub for now)"""
@@ -771,18 +842,16 @@ class OpenSkyMapApp:
         freq_id = frequency.replace('.', '_')
         js_code = f"""
         (function() {{
-            try {{
-                const channelItem = document.querySelector('.channel-item[data-freq-id="{freq_id}"]');
-                if (channelItem) {{
-                    channelItem.style.background = 'rgba(0,255,0,0.2)';
-                    setTimeout(() => {{
-                        channelItem.style.background = 'rgba(255,255,255,0.03)';
-                    }}, 300);
-                }}
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error flashing channel:', error);
-                return false;
+            const channelEl = document.querySelector('#channel-count-{freq_id}');
+            if (channelEl) {{
+                const parentEl = channelEl.parentElement.parentElement;
+                const originalBg = parentEl.style.background;
+                parentEl.style.background = '#001F2B';
+                parentEl.style.borderLeft = '2px solid #00FF7F';
+                setTimeout(() => {{
+                    parentEl.style.background = originalBg;
+                    parentEl.style.borderLeft = '';
+                }}, 300);
             }}
         }})();
         """
@@ -793,44 +862,37 @@ class OpenSkyMapApp:
             error(f"Error flashing channel: {e}")
 
     def update_worker_status(self, data):
-        """Update worker status display - FIXED to prevent layering"""
+        """Update worker status display"""
         if not self.window or not self.overlay_initialized:
             return
 
         worker_id = data.get('worker_id', 0)
         status = data.get('status', 'idle')
-        color = '#00ff00' if status == 'idle' else '#ff9900'
-        bg_color = 'rgba(0,255,0,0.1)' if status == 'idle' else 'rgba(255,153,0,0.2)'
-        border_color = 'rgba(0,255,0,0.3)' if status == 'idle' else 'rgba(255,153,0,0.5)'
-        status_text = 'IDLE' if status == 'idle' else 'BUSY'
-        channel_text = '' if status == 'idle' else f"<div style='font-size: 8px; margin-top: 2px; opacity: 0.8;'>{data.get('channel', '')[:8]}</div>"
+
+        if status == 'idle':
+            bg_color = '#0A0A0A'
+            text_color = '#00FF7F'
+            status_text = 'IDLE'
+            border = '1px solid #1A1A1A'
+        else:
+            bg_color = '#1A1A1A'
+            text_color = '#FF9900'
+            channel = data.get('channel', '')
+            status_text = f'ACTIVE<br><span style="font-size: 8px; color: #6B9DB5;">{channel[:8]}</span>'
+            border = '1px solid #FF9900'
 
         js_code = f"""
         (function() {{
-            try {{
-                const worker = document.getElementById('worker-{worker_id}');
-                const workerStatus = document.getElementById('worker-{worker_id}-status');
-
-                if (worker) {{
-                    worker.style.background = '{bg_color}';
-                    worker.style.borderColor = '{border_color}';
-
-                    if ('{status}' === 'busy') {{
-                        worker.style.animation = 'pulse 1s infinite';
-                    }} else {{
-                        worker.style.animation = '';
-                    }}
+            const worker = document.getElementById('worker-{worker_id}');
+            if (worker) {{
+                worker.style.background = '{bg_color}';
+                worker.style.border = '{border}';
+                worker.innerHTML = '<div style="color: #6B9DB5; text-transform: uppercase; margin-bottom: 4px; font-size: 9px; letter-spacing: 0.5px;">W{worker_id}</div><div style="color: {text_color}; font-weight: 600; font-size: 9px;">{status_text}</div>';
+                if ('{status}' === 'busy') {{
+                    worker.style.animation = 'pulse 1.5s infinite';
+                }} else {{
+                    worker.style.animation = '';
                 }}
-
-                if (workerStatus) {{
-                    workerStatus.innerHTML = '{status_text}{channel_text}';
-                    workerStatus.style.color = '{color}';
-                }}
-
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error updating worker status:', error);
-                return false;
             }}
         }})();
         """
@@ -841,7 +903,7 @@ class OpenSkyMapApp:
             error(f"Error updating worker status: {e}")
 
     def update_statistics(self, stats):
-        """Update statistics display - FIXED to prevent layering"""
+        """Update statistics display"""
         if not self.window or not self.overlay_initialized:
             return
 
@@ -850,22 +912,11 @@ class OpenSkyMapApp:
 
         js_code = f"""
         (function() {{
-            try {{
-                const queueEl = document.getElementById('queue-size');
-                if (queueEl && queueEl.textContent !== '{queue_size}') {{
-                    queueEl.textContent = {queue_size};
-                }}
+            const queueEl = document.getElementById('queue-size');
+            if (queueEl) queueEl.textContent = {queue_size};
 
-                const workersEl = document.getElementById('workers-busy');
-                if (workersEl && workersEl.textContent !== '{workers_busy}') {{
-                    workersEl.textContent = {workers_busy};
-                }}
-
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error updating statistics:', error);
-                return false;
-            }}
+            const workersEl = document.getElementById('workers-busy');
+            if (workersEl) workersEl.textContent = {workers_busy};
         }})();
         """
 
@@ -879,26 +930,19 @@ class OpenSkyMapApp:
         if not self.window or not self.overlay_initialized:
             return
 
-        recording_num = data.get('recording_number', 0)
-
         js_code = f"""
         (function() {{
-            try {{
-                const statusEl = document.getElementById('monitor-status');
-                if (statusEl) {{
-                    statusEl.style.color = '#ff9900';
-                    statusEl.textContent = '◉ REC #{recording_num}';
+            const statusEl = document.getElementById('monitor-status');
+            if (statusEl) {{
+                statusEl.style.color = '#FF9900';
+                statusEl.textContent = '◉ REC #{data.get('recording_number', 0)}';
 
-                    setTimeout(() => {{
-                        statusEl.style.color = '#00ff00';
-                        statusEl.textContent = '◉ ACTIVE';
-                    }}, 2000);
-                }}
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error showing recording status:', error);
-                return false;
+                setTimeout(() => {{
+                    statusEl.style.color = '#00FF7F';
+                    statusEl.textContent = '◉ ACTIVE';
+                }}, 2000);
             }}
+            return true;
         }})();
         """
 
@@ -908,66 +952,45 @@ class OpenSkyMapApp:
             error(f"Error showing recording status: {e}")
 
     def show_alert(self, data):
-        """Show alert in GUI - FIXED to prevent duplicates"""
+        """Show alert in GUI"""
         if not self.window or not self.overlay_initialized:
             return
 
         alert_type = data.get('type', 'Unknown')
         alert_text = data.get('transcript', '')[:100]
-        alert_id = f"alert-{int(time.time() * 1000)}"
 
-        # Escape text for safe injection
-        alert_text_escaped = alert_text.replace("'", "\\'").replace('"', '\\"').replace('\n', ' ')
+        alert_text = alert_text.replace("'", "\\'").replace('"', '\\"').replace('\n', ' ')
 
         js_code = f"""
         (function() {{
-            try {{
-                // Remove any existing alerts first
-                const existingAlert = document.getElementById('{alert_id}');
-                if (existingAlert) {{
-                    existingAlert.remove();
-                }}
+            const alert = document.createElement('div');
+            alert.style.cssText = `
+                position: fixed;
+                top: 300px;
+                right: 20px;
+                background: #000000;
+                color: #FF0000;
+                padding: 16px 20px;
+                border: 2px solid #FF0000;
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                z-index: 10001;
+                box-shadow: 0 0 30px rgba(255, 0, 0, 0.5);
+                max-width: 400px;
+                animation: pulse 1s infinite;
+            `;
 
-                const alert = document.createElement('div');
-                alert.id = '{alert_id}';
-                alert.style.cssText = `
-                    position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: linear-gradient(135deg, rgba(255, 0, 0, 0.95) 0%, rgba(200, 0, 0, 0.95) 100%);
-                    color: white;
-                    padding: 20px 25px;
-                    font-family: 'Courier New', monospace;
-                    z-index: 10002;
-                    box-shadow: 0 0 0 3px #ff0000, 0 0 30px rgba(255,0,0,0.5), inset 0 0 20px rgba(255,255,255,0.1);
-                    max-width: 500px;
-                    animation: pulse 1s infinite;
-                    clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 0 100%);
-                `;
+            alert.innerHTML = `
+                <h4 style="margin: 0 0 10px 0; font-size: 12px; letter-spacing: 2px; text-transform: uppercase;">⚠ ALERT: {alert_type.upper()}</h4>
+                <p style="margin: 0; font-size: 11px; color: #FFFFFF; line-height: 1.4;">{alert_text}</p>
+            `;
 
-                alert.innerHTML = `
-                    <div style="font-size: 16px; font-weight: 700; letter-spacing: 2px; margin-bottom: 10px; text-transform: uppercase;">
-                        ⚠ ALERT: {alert_type} ⚠
-                    </div>
-                    <div style="font-size: 13px; line-height: 1.5;">
-                        {alert_text_escaped}
-                    </div>
-                `;
+            document.body.appendChild(alert);
 
-                document.body.appendChild(alert);
+            setTimeout(() => {{
+                alert.remove();
+            }}, 10000);
 
-                setTimeout(() => {{
-                    if (alert.parentNode) {{
-                        alert.remove();
-                    }}
-                }}, 10000);
-
-                return true;
-            }} catch (error) {{
-                console.error('[ATC] Error showing alert:', error);
-                return false;
-            }}
+            return true;
         }})();
         """
 
@@ -996,13 +1019,12 @@ class OpenSkyMapApp:
                 info(f"Initialization status: {status}")
 
                 if status.get('initialized'):
-                    self.overlay_initialized = True
-                    success("ATC overlay is active!")
+                    success("✓ ATC overlay is active!")
                 else:
                     if status.get('attempts', 0) < 30:
                         threading.Timer(2.0, self.check_initialization_status).start()
                     else:
-                        error("Failed to initialize after maximum attempts")
+                        warning("Circle overlay may not be visible - this is usually fine")
             else:
                 warning("Could not get initialization status")
 
