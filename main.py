@@ -1,16 +1,21 @@
 import argparse
+import json
+import os
 import threading
 import time
-
-from core.monitor import ATCMonitor
 from core.multi_channel_monitor import MultiChannelATCMonitor
-from utils.config import VAD_THRESHOLD, SILENCE_DURATION, LIVEATC_STREAM_URL, NUM_TRANSCRIPTION_WORKERS
+from utils import config
 from utils.console_logger import section
-import json
 
 
 def load_channel_config(config_file):
     """Load channel configuration from JSON file"""
+    with open(config_file, 'r') as f:
+        return json.load(f)
+
+
+def load_location_config(config_file):
+    """Load location configuration from JSON file"""
     with open(config_file, 'r') as f:
         return json.load(f)
 
@@ -76,17 +81,27 @@ def main():
     time.sleep(3.72)
 
     parser = argparse.ArgumentParser(description='ATC Communication Monitor')
-    parser.add_argument('--monitor', action='store_true', help='Start single-channel monitoring')
     parser.add_argument('--multi', action='store_true', help='Start multi-channel monitoring')
     parser.add_argument('--channels', type=str, help='Path to channels configuration JSON file')
-    parser.add_argument('--workers', type=int, default=None, 
-                       help=f'Number of transcription workers (default: {NUM_TRANSCRIPTION_WORKERS} from config)')
-    parser.add_argument('--duration', type=int, help='Monitoring duration in seconds')
-    parser.add_argument('--vad-threshold', type=float, default=VAD_THRESHOLD)
-    parser.add_argument('--silence-duration', type=float, default=SILENCE_DURATION)
-    parser.add_argument('--stream-url', type=str, default=LIVEATC_STREAM_URL)
-    parser.add_argument('--system-audio', action='store_true')
+    parser.add_argument('--location', type=str, help='Path to location configuration JSON file')
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=None,
+        help=f'Number of transcription workers (default: {config.NUM_TRANSCRIPTION_WORKERS} from config)'
+    )
     args = parser.parse_args()
+
+    location_config = None
+    if args.location:
+        location_config = load_location_config(args.location)
+    elif args.multi and not args.channels:
+        default_location = "location_pdx.json"
+        if os.path.exists(default_location):
+            location_config = load_location_config(default_location)
+
+    if location_config:
+        config.apply_location_settings(location_config)
 
     if args.multi:
         section("Multi-Channel ATC Monitor", emoji="✈️")
@@ -94,6 +109,8 @@ def main():
         # Load channel configuration
         if args.channels:
             channels = load_channel_config(args.channels)
+        elif location_config and location_config.get("channels"):
+            channels = location_config["channels"]
         else:
             # Default PDX area channels
             channels = [
@@ -120,7 +137,7 @@ def main():
 
         # Create multi-channel monitor
         # If --workers specified, use it; otherwise uses NUM_TRANSCRIPTION_WORKERS from config
-        num_workers = args.workers if args.workers is not None else NUM_TRANSCRIPTION_WORKERS
+        num_workers = args.workers if args.workers is not None else config.NUM_TRANSCRIPTION_WORKERS
         atc_monitor = MultiChannelATCMonitor(channels, num_transcription_workers=num_workers)
 
         # Start monitoring in background thread
@@ -128,19 +145,6 @@ def main():
         monitor_thread.start()
 
         # Run GUI
-        from gui.map_app_webview import run_webview_app
-        run_webview_app(atc_monitor)
-        monitor_thread.join()
-
-    elif args.monitor:
-        # Original single-channel mode
-        section("ATC Monitor - Single Channel", emoji="✈️")
-        monitor_params = vars(args)
-        atc_monitor = ATCMonitor(monitor_params)
-
-        monitor_thread = threading.Thread(target=atc_monitor.start_monitoring)
-        monitor_thread.start()
-
         from gui.map_app_webview import run_webview_app
         run_webview_app(atc_monitor)
         monitor_thread.join()

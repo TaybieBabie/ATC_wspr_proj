@@ -5,7 +5,7 @@ import math
 from tkintermapview import TkinterMapView
 from collections import deque
 from datetime import datetime, timedelta
-from utils.config import AIRPORT_LAT, AIRPORT_LON
+from utils import config
 
 
 class MapApp(tkinter.Tk):
@@ -64,12 +64,12 @@ class MapApp(tkinter.Tk):
         self.trail_checkbox.pack(side="left", padx=5)
 
         # --- Initial Setup ---
-        self.map_widget.set_position(AIRPORT_LAT, AIRPORT_LON)
+        self.map_widget.set_position(config.AIRPORT_LAT, config.AIRPORT_LON)
         self.map_widget.set_zoom(10)
 
         # Airport marker with custom icon
         self.map_widget.set_marker(
-            AIRPORT_LAT, AIRPORT_LON,
+            config.AIRPORT_LAT, config.AIRPORT_LON,
             text="Airport",
             marker_color_circle="#FF0000",
             marker_color_outside="#8B0000"

@@ -18,7 +18,7 @@ ANALYSIS_DIR = "analysis/"
 ENABLE_GPU = True
 
 # GPU Configuration
-GPU_BACKEND = "auto"  # Options: "auto", "cuda", "directml", "cpu"
+GPU_BACKEND = "cuda"  # Options: "auto", "cuda", "directml", "cpu"
 PREFER_AMD_GPU = False  # Set to True to prefer AMD over NVIDIA when both available
 DIRECTML_ENABLED = True  # Enable DirectML support for AMD GPUs
 PREFER_ONNX_DIRECTML = True  # Prefer ONNX Runtime DirectML over PyTorch DirectML
@@ -93,7 +93,7 @@ BATCH_SIZE = 1  # For batch processing
 # - For testing, start with 1 worker and increase gradually
 # - CPU mode: Can use more workers (4-8) but transcription is much slower
 #
-NUM_TRANSCRIPTION_WORKERS = 5  # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
+NUM_TRANSCRIPTION_WORKERS = 4 # Default: 3 workers (suitable for 8-16GB VRAM with small/medium model)
 
 # Audio preprocessing
 OPTIMIZE_FOR_RADIO = True
@@ -105,21 +105,31 @@ SAMPLE_RATE = 16000  # Good for speech recognition
 CHANNELS = 1  # Mono for ATC
 AUDIO_DIR = "audio/raw/"
 
-# ATC settings
-ATC_FREQUENCY = "121.9"  # Your local frequency
-
 # VAD settings
 VAD_THRESHOLD = 0.1  # Adjust based on your audio levels
 SILENCE_DURATION = 3.0  # Seconds of silence before ending recording
-MIN_TRANSMISSION_LENGTH = 1.0  # Minimum seconds to save a transmission
-
-# LiveATC settings
-LIVEATC_STREAM_URL = "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=2025071901325928523"  # Replace with your local feed
+MIN_TRANSMISSION_LENGTH = 0.45  # Minimum seconds to save a transmission
 
 # Airport/Monitoring Area Configuration
+LOCATION_NAME = "Default"
 AIRPORT_LAT = 44.8851  # Your airport latitude (45.588699 for pdx, 44.8851 for msp)
 AIRPORT_LON = -93.2144  # Your airport longitude (-122.5975 for , -93.2144 for msp)
 SEARCH_RADIUS_NM = 50  # Nautical miles radius to monitor
+
+
+def apply_location_settings(location: dict) -> None:
+    """Apply location-specific settings from a configuration dictionary."""
+    global LOCATION_NAME, AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM
+
+    airport = location.get("airport", {}) if isinstance(location, dict) else {}
+    if "name" in location:
+        LOCATION_NAME = location["name"]
+    if "lat" in airport:
+        AIRPORT_LAT = airport["lat"]
+    if "lon" in airport:
+        AIRPORT_LON = airport["lon"]
+    if "search_radius_nm" in location:
+        SEARCH_RADIUS_NM = location["search_radius_nm"]
 
 # ADS-B Configuration
 ENABLE_ADSB = True
@@ -142,8 +152,8 @@ POSITION_TOLERANCE = 5  # nautical miles
 
 # LLM Correlator Settings
 ENABLE_LLM_CORRELATION = True
-OLLAMA_MODEL = "gpt-oss:20b"
-OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "mistral:7b"
+OLLAMA_BASE_URL = "http://0.0.0.0:11434"
 # Timeout for Ollama correlation requests (kept higher for large batches)
 OLLAMA_REQUEST_TIMEOUT = 220  # seconds
 LLM_MAX_ADSB_CONTACTS = 100
@@ -151,9 +161,9 @@ LLM_MAX_TRANSMISSIONS = 15
 
 # Advanced Ollama correlator tuning (these were previously hardcoded)
 # Maximum tokens supported by the Ollama model context window
-OLLAMA_CONTEXT_WINDOW_TOKENS = 12400
+OLLAMA_CONTEXT_WINDOW_TOKENS = 6500
 # Tokens reserved for the model's response to avoid truncation
-OLLAMA_MAX_RESPONSE_TOKENS = 6400
+OLLAMA_MAX_RESPONSE_TOKENS = 5500
 # Conservative character-to-token ratio for prompt budgeting
 OLLAMA_CHARS_PER_TOKEN = 4.0
 # Extra buffer added to token estimates for safety
