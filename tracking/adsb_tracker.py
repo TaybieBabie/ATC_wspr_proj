@@ -6,12 +6,7 @@ from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional
 import math
-from utils.config import (
-    AIRPORT_LAT,
-    AIRPORT_LON,
-    SEARCH_RADIUS_NM,
-    OPENSKY_CREDENTIALS_FILE,
-)
+from utils import config
 
 
 class Aircraft:
@@ -316,7 +311,7 @@ class ADSBTracker:
 
     def __init__(self, data_source: ADSBDataSource = None):
         self.data_source = data_source or OpenSkySource(
-            OPENSKY_CREDENTIALS_FILE
+            config.OPENSKY_CREDENTIALS_FILE
         )
         self.aircraft_history = {}
         self.current_aircraft = {}
@@ -324,7 +319,7 @@ class ADSBTracker:
     def update_aircraft_positions(self):
         """Fetch current aircraft positions"""
         aircraft_list = self.data_source.get_aircraft_in_area(
-            AIRPORT_LAT, AIRPORT_LON, SEARCH_RADIUS_NM
+            config.AIRPORT_LAT, config.AIRPORT_LON, config.SEARCH_RADIUS_NM
         )
         self.current_aircraft = {ac.icao24: ac for ac in aircraft_list}
         return aircraft_list

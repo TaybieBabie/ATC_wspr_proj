@@ -1,0 +1,46 @@
+{
+  "name": "Portland (PDX)",
+  "airport": {
+    "lat": 45.588699,
+    "lon": -122.5975
+  },
+  "search_radius_nm": 50,
+  "channels": [
+    {
+      "name": "PDX Tower",
+      "frequency": "118.7",
+      "stream_url": "https://s1-fmt2.liveatc.net/kpdx3_twr?nocache=2025080805394825599",
+      "color": "#FF0000"
+    },
+    {
+      "name": "PDX Ground",
+      "frequency": "121.9",
+      "stream_url": "https://s1-fmt2.liveatc.net/kpdx_gnd",
+      "color": "#FFA500"
+    },
+    {
+      "name": "Hillsboro Tower",
+      "frequency": "119.3",
+      "stream_url": "https://s1-bos.liveatc.net/khio_twr_pri?nocache=2025080805442632399",
+      "color": "#00FF00"
+    },
+    {
+      "name": "PDX App/Dep (South)",
+      "frequency": "118.1",
+      "stream_url": "https://s1-fmt2.liveatc.net/kpdx_app_118100?nocache=2025071901325928523",
+      "color": "#0000FF"
+    },
+    {
+      "name": "Troutdale Tower",
+      "frequency": "126.0",
+      "stream_url": "https://s1-fmt2.liveatc.net/kttd1?nocache=2025080805430362184",
+      "color": "#FF00FF"
+    },
+    {
+      "name": "Seattle Center",
+      "frequency": "125.25",
+      "stream_url": "https://s1-bos.liveatc.net/kpdx_zse?nocache=2025080805411138417",
+      "color": "#00FFFF"
+    }
+  ]
+}
