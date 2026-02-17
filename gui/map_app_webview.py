@@ -49,7 +49,6 @@ class OpenSkyMapApp:
 
     def run(self):
         """Run the application"""
-        # Create window with the OpenSky map URL
         window_title = 'Multi-Channel ATC Monitor'
         self.window = webview.create_window(
             window_title,
@@ -58,15 +57,12 @@ class OpenSkyMapApp:
             height=900
         )
 
-        # Set up event handlers
         self.window.events.loaded += self.on_page_loaded
         self.window.events.closed += self.on_closed
 
-        # Start update thread
         update_thread = threading.Thread(target=self.process_updates, daemon=True)
         update_thread.start()
 
-        # Start webview (blocks until window is closed)
         webview.start(debug=True)
 
     def on_page_loaded(self):
@@ -75,8 +71,6 @@ class OpenSkyMapApp:
         self.page_loaded = True
         self.overlay_initialized = False
         self.inject_attempts = 0
-
-        # Start injection retries as soon as the page is ready.
         self._schedule_injection_retry(1.0, "page loaded")
         self._start_injection_watchdog()
 
@@ -198,7 +192,6 @@ class OpenSkyMapApp:
                     try {{
                         console.log('[ATC] Attempting to toggle labels...');
 
-                        // Toggle 'L' (Labels) button
                         const lButton = document.getElementById('L');
                         if (lButton) {{
                             if (!lButton.classList.contains('activeButton')) {{
@@ -211,7 +204,6 @@ class OpenSkyMapApp:
                             console.log('[ATC] Labels button (L) not found');
                         }}
 
-                        // Toggle 'O' (Extended Labels) button
                         const oButton = document.getElementById('O');
                         if (oButton) {{
                             if (!oButton.classList.contains('activeButton')) {{
@@ -383,10 +375,13 @@ class OpenSkyMapApp:
 
                                 <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">QUEUE</div>
                                 <div>
-                                    <span id="queue-size" style="color: #00D4FF; font-weight: 600;">0</span> | 
-                                    <span style="color: #6B9DB5;">WORKERS:</span> 
+                                    <span id="queue-size" style="color: #00D4FF; font-weight: 600;">0</span> |
+                                    <span style="color: #6B9DB5;">WORKERS:</span>
                                     <span id="workers-busy" style="color: #00D4FF; font-weight: 600;">0</span><span style="color: #6B9DB5;">/{self.num_workers}</span>
                                 </div>
+
+                                <div style="color: #6B9DB5; text-transform: uppercase; letter-spacing: 0.5px;">TRACKED</div>
+                                <div><span id="tracked-aircraft" style="color: #00D4FF; font-weight: 600;">0</span> <span style="color: #6B9DB5;">AC</span></div>
                             </div>
                         </div>
 
@@ -552,9 +547,16 @@ class OpenSkyMapApp:
                 `;
                 document.head.appendChild(style);
 
-                // Initialize monitoring circle overlay - CANVAS APPROACH
+                // -------------------------------------------------------
+                // Monitoring circle overlay with radar sweep + OpenSky
+                // -------------------------------------------------------
                 let overlayInitialized = false;
                 let initAttempts = 0;
+
+                // Sweep state (closure-level so the draw loop can access)
+                let sweepAngle = -Math.PI / 2;
+                const SWEEP_SPEED = 0.0157;   // ~9 RPM at 60 fps (25 % slower)
+                let animFrameId = null;
 
                 function tryInitOverlay() {{
                     initAttempts++;
@@ -612,52 +614,294 @@ class OpenSkyMapApp:
                                 return;
                             }}
 
+                            // Canvas size cache to avoid unnecessary resets
+                            let lastW = 0, lastH = 0;
+
+                            // ------------------------------------------
+                            //  Main draw function (sweep + circle + highlights)
+                            // ------------------------------------------
                             function drawMonitoringCircle() {{
                                 const canvas = document.getElementById('atc-overlay-canvas');
                                 if (!canvas || !map) return;
 
-                                canvas.width = canvas.offsetWidth;
-                                canvas.height = canvas.offsetHeight;
+                                const w = canvas.offsetWidth;
+                                const h = canvas.offsetHeight;
+                                if (w !== lastW || h !== lastH) {{
+                                    canvas.width = w;
+                                    canvas.height = h;
+                                    lastW = w;
+                                    lastH = h;
+                                }}
 
                                 const ctx = canvas.getContext('2d');
                                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
                                 const centerCoords = ol.proj.fromLonLat([AIRPORT_LON, AIRPORT_LAT]);
                                 const centerPixel = map.getPixelFromCoordinate(centerCoords);
-
                                 if (!centerPixel) return;
 
                                 const resolution = map.getView().getResolution();
                                 const radiusPixels = RADIUS_METERS / resolution;
+                                const cx = centerPixel[0];
+                                const cy = centerPixel[1];
 
-                                // Draw with cyan/light blue theme
+                                // --- Sweep trail (conical fade) ---
+                                const trailAng = Math.PI / 2.2;
+                                const segs = 60;
+                                for (let i = 0; i < segs; i++) {{
+                                    const a1 = sweepAngle - trailAng * (i + 1) / segs;
+                                    const a2 = sweepAngle - trailAng * i / segs;
+                                    const t  = i / segs;
+                                    const alpha = Math.pow(1 - t, 2.2) * 0.18;
+                                    ctx.fillStyle = 'rgba(190,0,0,' + alpha + ')';
+                                    ctx.beginPath();
+                                    ctx.moveTo(cx, cy);
+                                    ctx.arc(cx, cy, radiusPixels - 1, a1, a2);
+                                    ctx.closePath();
+                                    ctx.fill();
+                                }}
+
+                                // --- Sweep leading edge ---
+                                const ex = cx + radiusPixels * Math.cos(sweepAngle);
+                                const ey = cy + radiusPixels * Math.sin(sweepAngle);
+                                ctx.save();
+                                ctx.shadowColor = 'rgba(190,0,0,0.7)';
+                                ctx.shadowBlur = 14;
+                                const grad = ctx.createLinearGradient(cx, cy, ex, ey);
+                                grad.addColorStop(0,   'rgba(190,0,0,0.1)');
+                                grad.addColorStop(0.5, 'rgba(190,0,0,0.55)');
+                                grad.addColorStop(1,   'rgba(190,0,0,0.95)');
+                                ctx.strokeStyle = grad;
+                                ctx.lineWidth = 2;
+                                ctx.beginPath();
+                                ctx.moveTo(cx, cy);
+                                ctx.lineTo(ex, ey);
+                                ctx.stroke();
+                                ctx.restore();
+
+                                // --- Monitoring radius circle (dashed) ---
                                 ctx.strokeStyle = 'rgba(190, 0, 0, 0.8)';
                                 ctx.lineWidth = 2;
                                 ctx.setLineDash([8, 8]);
-
                                 ctx.beginPath();
-                                ctx.arc(centerPixel[0], centerPixel[1], radiusPixels, 0, 2 * Math.PI);
+                                ctx.arc(cx, cy, radiusPixels, 0, 2 * Math.PI);
                                 ctx.stroke();
+                                ctx.setLineDash([]);
 
                                 ctx.fillStyle = 'rgba(255, 0, 0, 0.05)';
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, radiusPixels, 0, 2 * Math.PI);
                                 ctx.fill();
+
+                                // --- Center glow (red) ---
+                                const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 12);
+                                cg.addColorStop(0, 'rgba(190,0,0,0.5)');
+                                cg.addColorStop(1, 'rgba(190,0,0,0)');
+                                ctx.fillStyle = cg;
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, 12, 0, 2 * Math.PI);
+                                ctx.fill();
+
+                                // --- Center dot (red) ---
+                                ctx.fillStyle = 'rgba(190,0,0,0.9)';
+                                ctx.beginPath();
+                                ctx.arc(cx, cy, 3, 0, 2 * Math.PI);
+                                ctx.fill();
+
+                                // --- Draw highlighted aircraft (OpenSky) ---
+                                const highlighted = window.atcHighlightedAircraft || {{}};
+                                const now = Date.now();
+                                for (const cs in highlighted) {{
+                                    const hl = highlighted[cs];
+                                    if (now - hl.highlightTime > hl.ttl) {{
+                                        delete highlighted[cs];
+                                        continue;
+                                    }}
+                                    const ac = window.atcAircraftCache ? window.atcAircraftCache[cs] : null;
+                                    if (!ac) continue;
+                                    // Re-project pixel each frame (aircraft moves)
+                                    const px = ac.pixel ? ac.pixel[0] : null;
+                                    const py = ac.pixel ? ac.pixel[1] : null;
+                                    if (px === null || py === null) continue;
+
+                                    const age = (now - hl.highlightTime) / hl.ttl;
+                                    const a = 1 - age;
+
+                                    // Highlight ring
+                                    ctx.strokeStyle = 'rgba(255,200,0,' + (a * 0.8) + ')';
+                                    ctx.lineWidth = 2;
+                                    ctx.beginPath();
+                                    ctx.arc(px, py, 15, 0, Math.PI * 2);
+                                    ctx.stroke();
+
+                                    // Pulsing outer ring
+                                    const pulse = 0.5 + 0.5 * Math.sin(now / 200);
+                                    ctx.strokeStyle = 'rgba(255,200,0,' + (a * 0.3 * pulse) + ')';
+                                    ctx.lineWidth = 1;
+                                    ctx.beginPath();
+                                    ctx.arc(px, py, 22, 0, Math.PI * 2);
+                                    ctx.stroke();
+
+                                    // Callsign label
+                                    ctx.fillStyle = 'rgba(255,200,0,' + a + ')';
+                                    ctx.font = '10px Consolas, Monaco, monospace';
+                                    ctx.textAlign = 'left';
+                                    ctx.fillText(cs, px + 18, py - 4);
+                                }}
                             }}
 
-                            drawMonitoringCircle();
+                            // ------------------------------------------
+                            //  Animation loop
+                            // ------------------------------------------
+                            function animateRadar() {{
+                                sweepAngle += SWEEP_SPEED;
+                                if (sweepAngle > Math.PI * 3) sweepAngle -= Math.PI * 2;
+                                drawMonitoringCircle();
+                                animFrameId = requestAnimationFrame(animateRadar);
+                            }}
 
-                            map.on('moveend', drawMonitoringCircle);
-                            map.on('postrender', drawMonitoringCircle);
-                            map.getView().on('change:resolution', drawMonitoringCircle);
-                            map.getView().on('change:center', drawMonitoringCircle);
+                            // Pause when tab is hidden to save CPU
+                            document.addEventListener('visibilitychange', function() {{
+                                if (document.hidden) {{
+                                    if (animFrameId) {{
+                                        cancelAnimationFrame(animFrameId);
+                                        animFrameId = null;
+                                    }}
+                                }} else if (!animFrameId) {{
+                                    animateRadar();
+                                }}
+                            }});
+
+                            animateRadar();
+
+                            // ==================================================
+                            //  OpenSky Aircraft Feature Integration (stubs)
+                            // ==================================================
+                            window.atcAircraftCache = {{}};
+                            window.atcHighlightedAircraft = {{}};
+                            window.atcAircraftLastScan = 0;
+                            const AIRCRAFT_SCAN_INTERVAL = 3000;  // ms
+
+                            /**
+                             * Walk every vector layer on the OL map and cache
+                             * aircraft feature properties + projected pixel coords.
+                             */
+                            function scanOpenSkyFeatures() {{
+                                if (!map) return {{}};
+                                const cache = {{}};
+                                try {{
+                                    map.getLayers().forEach(function(layer) {{
+                                        var src;
+                                        try {{ src = layer.getSource && layer.getSource(); }} catch(_) {{ return; }}
+                                        if (!src || typeof src.getFeatures !== 'function') return;
+                                        src.getFeatures().forEach(function(feature) {{
+                                            try {{
+                                                const props = feature.getProperties();
+                                                const cs = (props.callsign || props.name || props.flight || '').toString().trim();
+                                                if (!cs) return;
+
+                                                const geom = feature.getGeometry();
+                                                if (!geom || !geom.getCoordinates) return;
+                                                const coords = geom.getCoordinates();
+                                                if (!coords) return;
+
+                                                const pixel = map.getPixelFromCoordinate(coords);
+                                                let lonLat = null;
+                                                try {{ lonLat = ol.proj.toLonLat(coords); }} catch(_) {{}}
+
+                                                cache[cs] = {{
+                                                    callsign:  cs,
+                                                    icao24:    props.icao24 || props.hex || '',
+                                                    coords:    coords,
+                                                    lonLat:    lonLat,
+                                                    pixel:     pixel,
+                                                    altitude:  props.altitude  || props.baro_altitude || props.geo_altitude || 0,
+                                                    velocity:  props.velocity  || props.speed || 0,
+                                                    heading:   props.heading   || props.true_track   || props.track || 0,
+                                                    on_ground: !!props.on_ground,
+                                                    squawk:    props.squawk || '',
+                                                    feature:   feature
+                                                }};
+                                            }} catch(_) {{}}
+                                        }});
+                                    }});
+                                }} catch (e) {{
+                                    console.warn('[ATC] Error scanning features:', e);
+                                }}
+                                window.atcAircraftCache = cache;
+                                window.atcAircraftLastScan = Date.now();
+
+                                // Push count to panel
+                                const countEl = document.getElementById('tracked-aircraft');
+                                if (countEl) countEl.textContent = Object.keys(cache).length;
+
+                                return cache;
+                            }}
+
+                            // Kick off periodic scanning
+                            scanOpenSkyFeatures();
+                            setInterval(scanOpenSkyFeatures, AIRCRAFT_SCAN_INTERVAL);
+
+                            /**
+                             * Highlight an aircraft by callsign on the overlay
+                             * canvas.  ttl = how long to keep the highlight (ms).
+                             */
+                            window.atcHighlightCallsign = function(callsign, ttl) {{
+                                const ac = window.atcAircraftCache[callsign];
+                                if (!ac || !ac.pixel) {{
+                                    console.log('[ATC] Callsign not found in cache: ' + callsign);
+                                    return false;
+                                }}
+                                window.atcHighlightedAircraft[callsign] = {{
+                                    callsign:      callsign,
+                                    pixel:         ac.pixel,
+                                    highlightTime: Date.now(),
+                                    ttl:           ttl || 10000
+                                }};
+                                console.log('[ATC] Highlighting aircraft: ' + callsign);
+                                return true;
+                            }};
+
+                            /**
+                             * Fuzzy-match a transcript string against all cached
+                             * callsigns.  Returns an array of matching cache entries.
+                             */
+                            window.atcMatchTranscript = function(transcript) {{
+                                const cache = window.atcAircraftCache;
+                                const matches = [];
+                                const upper = transcript.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                                for (const cs in cache) {{
+                                    const norm = cs.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                                    if (norm && upper.indexOf(norm) !== -1) {{
+                                        matches.push(cache[cs]);
+                                    }}
+                                }}
+                                return matches;
+                            }};
+
+                            /** Return the full aircraft cache object. */
+                            window.atcGetAircraft = function() {{
+                                return window.atcAircraftCache;
+                            }};
+
+                            /** Return number of currently-cached aircraft. */
+                            window.atcGetAircraftCount = function() {{
+                                return Object.keys(window.atcAircraftCache).length;
+                            }};
 
                             overlayInitialized = true;
-                            console.log('[ATC] Monitoring radius overlay initialized!');
+                            console.log('[ATC] Monitoring radius overlay with sweep initialized!');
 
                             window.atcOverlay = {{
-                                map: map,
-                                canvas: overlayCanvas,
-                                draw: drawMonitoringCircle,
-                                initialized: true
+                                map:              map,
+                                canvas:           overlayCanvas,
+                                draw:             drawMonitoringCircle,
+                                initialized:      true,
+                                scanAircraft:     scanOpenSkyFeatures,
+                                highlightCallsign: window.atcHighlightCallsign,
+                                matchTranscript:  window.atcMatchTranscript,
+                                getAircraft:      window.atcGetAircraft,
+                                getAircraftCount: window.atcGetAircraftCount
                             }};
 
                         }} catch (error) {{
@@ -700,6 +944,10 @@ class OpenSkyMapApp:
         except Exception as e:
             error(f"Error injecting monitor: {e}")
             self._schedule_injection_retry(2.0, "injection exception")
+
+    # -----------------------------------------------------------------
+    #  Queue / update processing
+    # -----------------------------------------------------------------
 
     def process_updates(self):
         """Process updates from the monitor"""
@@ -784,7 +1032,7 @@ class OpenSkyMapApp:
             transcript_html += f"""
             <div style="margin-bottom: 1px; padding: 10px; background: #0A0A0A; border-left: 2px solid {color}; animation: fadeInUp 0.3s ease-out;">
                 <div style="font-size: 9px; color: #6B9DB5; margin-bottom: 6px; letter-spacing: 0.5px; text-transform: uppercase;">
-                    [{time_str}] 
+                    [{time_str}]
                     <span style="color: {color}; font-weight: 700;">{trans.get('channel', 'Unknown')}</span>
                     <span style="float: right;">W{trans.get('worker_id', '?')}</span>
                 </div>
@@ -828,11 +1076,72 @@ class OpenSkyMapApp:
 
         latest = batch[-1]
         info(
-            f"[{latest.get('channel', 'Unknown')}] Transmission #{sum(self.channel_counters.values())}: {latest.get('transcript', '')[:50]}...")
+            f"[{latest.get('channel', 'Unknown')}] Transmission #{sum(self.channel_counters.values())}: "
+            f"{latest.get('transcript', '')[:50]}..."
+        )
+
+    # -----------------------------------------------------------------
+    #  Aircraft / OpenSky helpers (Python side)
+    # -----------------------------------------------------------------
 
     def update_aircraft(self, data):
-        """Update aircraft position (stub for now)"""
-        pass
+        """Update aircraft position and optionally highlight on map"""
+        callsign = data.get('callsign', '')
+        if callsign:
+            self.highlight_aircraft(callsign)
+
+    def get_tracked_aircraft(self):
+        """Retrieve cached aircraft data from the OpenSky map layer.
+
+        Returns a dict keyed by callsign with position, altitude, etc.
+        """
+        if not self.window or not self.overlay_initialized:
+            return {}
+        try:
+            result = self.window.evaluate_js("window.atcGetAircraft();")
+            return result or {}
+        except Exception as e:
+            error(f"Error getting aircraft data: {e}")
+            return {}
+
+    def highlight_aircraft(self, callsign, ttl=10000):
+        """Highlight an aircraft on the map by callsign.
+
+        The highlight ring persists for *ttl* milliseconds.
+        Returns True if the callsign was found in the cache.
+        """
+        if not self.window or not self.overlay_initialized:
+            return False
+        try:
+            safe_cs = callsign.replace("'", "\\'").replace('"', '\\"')
+            return bool(
+                self.window.evaluate_js(
+                    f"window.atcHighlightCallsign('{safe_cs}', {ttl});"
+                )
+            )
+        except Exception as e:
+            error(f"Error highlighting aircraft: {e}")
+            return False
+
+    def match_transcript_aircraft(self, transcript):
+        """Match a transcript string against visible aircraft callsigns.
+
+        Returns a list of matching aircraft cache entries (dicts).
+        """
+        if not self.window or not self.overlay_initialized:
+            return []
+        try:
+            safe_text = transcript.replace("'", "\\'").replace('"', '\\"').replace('\n', ' ')
+            return self.window.evaluate_js(
+                f"window.atcMatchTranscript('{safe_text}');"
+            ) or []
+        except Exception as e:
+            error(f"Error matching transcript: {e}")
+            return []
+
+    # -----------------------------------------------------------------
+    #  Channel / worker / stats UI updates
+    # -----------------------------------------------------------------
 
     def flash_channel(self, frequency):
         """Flash channel indicator when recording"""
