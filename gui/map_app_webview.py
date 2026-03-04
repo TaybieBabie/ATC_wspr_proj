@@ -3,6 +3,8 @@ import threading
 import queue
 import json
 import time
+import base64
+from pathlib import Path
 from collections import deque
 from datetime import datetime
 from utils import config
@@ -36,6 +38,7 @@ class OpenSkyMapApp:
         self.max_pending_transmissions = 100
         self.max_batch_size = 20
         self.last_ui_flush = 0.0
+        self.audio_data_uri_cache = {}
 
         # Channel-specific counters for multi-channel mode
         self.channel_counters = {}
@@ -428,6 +431,56 @@ class OpenSkyMapApp:
                         btnEl.textContent = 'UNMUTE';
                         btnEl.style.background = '#1A1A1A';
                     }}
+                }};
+
+                // Play/pause locally recorded audio for transcript cross-checking
+                window.activeTransmissionAudio = null;
+                window.transmissionAudioSources = window.transmissionAudioSources || {{}};
+                window.playTransmissionAudio = function(audioSrc, buttonEl) {{
+                    if (!audioSrc) {{
+                        return;
+                    }}
+
+                    if (window.activeTransmissionAudio && window.activeTransmissionAudio.src !== audioSrc) {{
+                        window.activeTransmissionAudio.pause();
+                    }}
+
+                    if (!window.activeTransmissionAudio || window.activeTransmissionAudio.src !== audioSrc) {{
+                        window.activeTransmissionAudio = new Audio(audioSrc);
+                        window.activeTransmissionAudio.load();
+                    }}
+
+                    var audio = window.activeTransmissionAudio;
+                    if (audio.paused) {{
+                        var playPromise = audio.play();
+                        if (playPromise && typeof playPromise.catch === 'function') {{
+                            playPromise.catch(function(err) {{
+                                console.error('[ATC] Audio play failed:', err);
+                            }});
+                        }}
+                        if (buttonEl) {{
+                            buttonEl.textContent = '⏸';
+                        }}
+                    }} else {{
+                        audio.pause();
+                        if (buttonEl) {{
+                            buttonEl.textContent = '▶';
+                        }}
+                    }}
+
+                    audio.onended = function() {{
+                        if (buttonEl) {{
+                            buttonEl.textContent = '▶';
+                        }}
+                    }};
+                }};
+                window.playTransmissionAudioById = function(audioId, buttonEl) {{
+                    var src = window.transmissionAudioSources[audioId];
+                    if (!src) {{
+                        console.warn('[ATC] Missing audio source for id:', audioId);
+                        return;
+                    }}
+                    window.playTransmissionAudio(src, buttonEl);
                 }};
 
                 // Create transcript display
@@ -1006,6 +1059,31 @@ class OpenSkyMapApp:
         """Add transmission for multi-channel mode"""
         self._apply_transmission_batch([data])
 
+    def _build_audio_source(self, audio_file):
+        """Build a browser-playable source for local recordings."""
+        if not audio_file:
+            return ""
+
+        audio_path = Path(audio_file).resolve()
+        if not audio_path.exists():
+            return ""
+
+        cache_key = str(audio_path)
+        if cache_key in self.audio_data_uri_cache:
+            return self.audio_data_uri_cache[cache_key]
+
+        suffix = audio_path.suffix.lower()
+        mime_type = 'audio/wav' if suffix == '.wav' else 'audio/mpeg'
+
+        try:
+            encoded = base64.b64encode(audio_path.read_bytes()).decode('ascii')
+            data_uri = f"data:{mime_type};base64,{encoded}"
+            self.audio_data_uri_cache[cache_key] = data_uri
+            return data_uri
+        except Exception as exc:
+            warning(f"Unable to build audio source for {audio_path}: {exc}")
+            return ""
+
     def _apply_transmission_batch(self, batch):
         """Apply a batch of transmissions to the UI."""
         if not self.window or not self.overlay_initialized:
@@ -1024,10 +1102,24 @@ class OpenSkyMapApp:
             self.displayed_transcripts.pop(0)
 
         transcript_html = ""
-        for trans in self.displayed_transcripts:
+        audio_sources = {}
+        for idx, trans in enumerate(self.displayed_transcripts):
             color = trans.get('color', '#00D4FF')
             timestamp = trans.get('timestamp', datetime.now().isoformat())
             time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp
+            audio_file = trans.get('audio_file')
+            audio_src = self._build_audio_source(audio_file)
+            play_button_html = ""
+            if audio_src:
+                audio_id = f"t{idx}"
+                audio_sources[audio_id] = audio_src
+                play_button_html = (
+                    "<button "
+                    f"onclick=\"window.playTransmissionAudioById('{audio_id}', this)\" "
+                    "style=\"float: right; margin-left: 8px; background: #001F2B; color: #00D4FF; "
+                    "border: 1px solid #00D4FF; border-radius: 3px; padding: 1px 6px; cursor: pointer;\" "
+                    "title=\"Play recorded audio\">▶</button>"
+                )
 
             transcript_html += f"""
             <div style="margin-bottom: 1px; padding: 10px; background: #0A0A0A; border-left: 2px solid {color}; animation: fadeInUp 0.3s ease-out;">
@@ -1037,6 +1129,7 @@ class OpenSkyMapApp:
                     <span style="float: right;">W{trans.get('worker_id', '?')}</span>
                 </div>
                 <div style="font-size: 11px; color: #FFFFFF; line-height: 1.4; font-family: 'Consolas', 'Monaco', monospace;">
+                    {play_button_html}
                     {trans.get('transcript', '')[:200]}{'...' if len(trans.get('transcript', '')) > 200 else ''}
                 </div>
             </div>
@@ -1061,6 +1154,7 @@ class OpenSkyMapApp:
                 totalEl.textContent = {sum(self.channel_counters.values())};
             }}
 
+            window.transmissionAudioSources = {json.dumps(audio_sources)};
             const contentEl = document.getElementById('transcript-content');
             if (contentEl) {{
                 contentEl.innerHTML = `{transcript_html}`;

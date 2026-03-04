@@ -398,6 +398,7 @@ class MultiChannelATCMonitor:
                 'channel': channel_name,
                 'frequency': channel_info['frequency'],
                 'color': channel_info['color'],
+                'audio_file': audio_file,
                 'timestamp': result['metadata']['timestamp'],
                 'worker_id': result['worker_id'],
                 'processing_time': result['processing_time'],
