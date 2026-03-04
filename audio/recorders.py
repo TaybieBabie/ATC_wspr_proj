@@ -23,9 +23,10 @@ class LiveATCRecorder:
         self.ffmpeg_process = None
         self.sample_rate = SAMPLE_RATE
         self.channels = CHANNELS
+        self.audio_dir = AUDIO_DIR
 
-        if not os.path.exists(AUDIO_DIR):
-            os.makedirs(AUDIO_DIR)
+        if not os.path.exists(self.audio_dir):
+            os.makedirs(self.audio_dir)
 
     def capture_stream_audio(self):
         """Capture audio from LiveATC stream using ffmpeg"""
@@ -79,7 +80,7 @@ class LiveATCRecorder:
             if os.altsep:
                 safe_freq = safe_freq.replace(os.altsep, '_')
             freq_str = f"_{safe_freq}"
-        filename = os.path.join(AUDIO_DIR, f"transmission_{timestamp}{freq_str}.wav")
+        filename = os.path.join(self.audio_dir, f"transmission_{timestamp}{freq_str}.wav")
 
         try:
             with wave.open(filename, 'wb') as wf:
@@ -169,8 +170,9 @@ class SystemAudioRecorder:
     def __init__(self, vad_threshold=0.01, silence_duration=2.0):
         self.vad_threshold = vad_threshold
         self.silence_duration = silence_duration
-        if not os.path.exists(AUDIO_DIR):
-            os.makedirs(AUDIO_DIR)
+        self.audio_dir = AUDIO_DIR
+        if not os.path.exists(self.audio_dir):
+            os.makedirs(self.audio_dir)
 
     def record_system_audio_with_vad(self, frequency=None, device_index=None):
         """Record from system audio with VAD"""
@@ -208,7 +210,7 @@ class SystemAudioRecorder:
             if os.altsep:
                 safe_freq = safe_freq.replace(os.altsep, '_')
             freq_str = f"_{safe_freq}"
-        filename = os.path.join(AUDIO_DIR, f"transmission_{timestamp}{freq_str}.wav")
+        filename = os.path.join(self.audio_dir, f"transmission_{timestamp}{freq_str}.wav")
         try:
             with wave.open(filename, 'wb') as wf:
                 wf.setnchannels(CHANNELS)
