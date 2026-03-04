@@ -1,5 +1,6 @@
 import threading
 import sys
+import os
 from datetime import datetime
 from enum import Enum
 import time
@@ -75,6 +76,9 @@ class ConsoleLogger:
         with self.lock:
             if self.log_file:
                 self.log_file.close()
+            log_dir = os.path.dirname(file_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
             self.log_file = open(file_path, "a", encoding="utf-8")
 
     def close_log_file(self):

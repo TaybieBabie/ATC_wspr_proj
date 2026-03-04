@@ -836,6 +836,15 @@ class OllamaCorrelator:
         )
 
         prompt_tokens = self.rolling_context._estimate_tokens(prompt)
+        llm_trace = {
+            "model": self.model,
+            "prompt": prompt,
+            "response": "",
+            "prompt_tokens_estimate": prompt_tokens,
+            "adsb_contacts_used": num_adsb,
+            "transmissions_used": num_tx,
+            "started_at": datetime.utcnow().isoformat() + "Z",
+        }
         total_budget = prompt_tokens + self.rolling_context.max_response_tokens
         self.stats["Context Size"] = (
             f"{prompt_tokens}+{self.rolling_context.max_response_tokens}"
@@ -892,6 +901,8 @@ class OllamaCorrelator:
 
             result = response.json()
             response_text = result.get("response", "")
+            llm_trace["response"] = response_text
+            llm_trace["completed_at"] = datetime.utcnow().isoformat() + "Z"
 
             if self.debug_monitor is not None:
                 self.debug_monitor.log_response(response_text)
@@ -921,6 +932,8 @@ class OllamaCorrelator:
             parsed = self._parse_response(response_text)
 
             if "error" in parsed:
+                llm_trace["error"] = parsed.get("error", "Parse error")
+                parsed["__trace"] = llm_trace
                 self.stats["Errors"] += 1
                 self._update_stats()
                 self._set_status("● Parse Error")
@@ -956,6 +969,7 @@ class OllamaCorrelator:
                         "warning",
                     )
 
+            parsed["__trace"] = llm_trace
             self._update_stats()
             self._set_status("● Ready")
             return parsed
@@ -963,21 +977,27 @@ class OllamaCorrelator:
         except requests.exceptions.Timeout:
             self.stats["Errors"] += 1
             self._log(f"Request timed out after {self.request_timeout}s", "error")
+            llm_trace["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            llm_trace["error"] = "LLM request timed out"
             self._update_stats()
             self._set_status("● Timeout")
-            return {"error": "LLM request timed out", "raw": ""}
+            return {"error": "LLM request timed out", "raw": "", "__trace": llm_trace}
         except requests.exceptions.ConnectionError:
             self.stats["Errors"] += 1
             self._log("Cannot connect to Ollama", "error")
+            llm_trace["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            llm_trace["error"] = "Cannot connect to Ollama"
             self._update_stats()
             self._set_status("● Connection Error")
-            return {"error": "Cannot connect to Ollama", "raw": ""}
+            return {"error": "Cannot connect to Ollama", "raw": "", "__trace": llm_trace}
         except Exception as exc:
             self.stats["Errors"] += 1
             self._log(f"Error: {exc}", "error")
+            llm_trace["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            llm_trace["error"] = str(exc)
             self._update_stats()
             self._set_status("● Error")
-            return {"error": str(exc), "raw": ""}
+            return {"error": str(exc), "raw": "", "__trace": llm_trace}
 
     # ------------------------------------------------------------------
     # JSON repair / parse
