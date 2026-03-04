@@ -1,6 +1,8 @@
 """Integration helpers for performing ADS-B/ATC correlation via Ollama LLM."""
 from __future__ import annotations
 
+import atexit
+import gc
 import json
 import math
 import os
@@ -46,6 +48,13 @@ from utils.config import (
     OLLAMA_TOP_P,
     OLLAMA_TRANSMISSION_PREVIEW_CHARS,
 )
+
+# ---------------------------------------------------------------------------
+# Default keep_alive sent with normal generate requests (keeps model hot in
+# VRAM between calls to reduce latency).  On shutdown we override this to 0
+# so the model is evicted immediately.
+# ---------------------------------------------------------------------------
+OLLAMA_KEEP_ALIVE: str = "10m"
 
 
 @dataclass
@@ -133,10 +142,20 @@ class DebugMonitor:
 
     def __init__(self):
         self.message_queue: queue.Queue = queue.Queue()
-        self.window = None
-        self.text_widget = None
+        self.window: Optional[tk.Tk] = None
+        self.text_widget: Optional[scrolledtext.ScrolledText] = None
+        self.prompt_text: Optional[scrolledtext.ScrolledText] = None
+        self.response_text: Optional[scrolledtext.ScrolledText] = None
+        self.status_label: Optional[ttk.Label] = None
+        self.stats_labels: Dict[str, ttk.Label] = {}
+
+        # Use plain Python bool instead of tk.BooleanVar to avoid
+        # threading issues during garbage collection
+        self._auto_scroll: bool = True
+
         self.running = False
-        self._thread = None
+        self._thread: Optional[threading.Thread] = None
+        self._shutdown_complete = threading.Event()
 
         if HAS_TK:
             self._start_gui_thread()
@@ -152,27 +171,31 @@ class DebugMonitor:
         style.configure('Dark.TFrame', background=self.COLORS['bg'])
         style.configure('DarkSecondary.TFrame', background=self.COLORS['bg_secondary'])
         style.configure('Dark.TLabelframe', background=self.COLORS['bg_secondary'],
-                       foreground=self.COLORS['fg'], bordercolor=self.COLORS['border'])
+                        foreground=self.COLORS['fg'], bordercolor=self.COLORS['border'])
         style.configure('Dark.TLabelframe.Label', background=self.COLORS['bg_secondary'],
-                       foreground=self.COLORS['accent'], font=('Consolas', 10, 'bold'))
+                        foreground=self.COLORS['accent'], font=('Consolas', 10, 'bold'))
         style.configure('Dark.TLabel', background=self.COLORS['bg_secondary'],
-                       foreground=self.COLORS['fg'], font=('Consolas', 9))
+                        foreground=self.COLORS['fg'], font=('Consolas', 9))
         style.configure('DarkValue.TLabel', background=self.COLORS['bg_secondary'],
-                       foreground=self.COLORS['success'], font=('Consolas', 9, 'bold'))
+                        foreground=self.COLORS['success'], font=('Consolas', 9, 'bold'))
         style.configure('Dark.TNotebook', background=self.COLORS['bg'],
-                       bordercolor=self.COLORS['border'])
+                        bordercolor=self.COLORS['border'])
         style.configure('Dark.TNotebook.Tab', background=self.COLORS['bg_tertiary'],
-                       foreground=self.COLORS['fg'], padding=[10, 5], font=('Consolas', 9))
+                        foreground=self.COLORS['fg'], padding=[10, 5], font=('Consolas', 9))
         style.map('Dark.TNotebook.Tab',
-                 background=[('selected', self.COLORS['bg_secondary'])],
-                 foreground=[('selected', self.COLORS['accent'])])
+                  background=[('selected', self.COLORS['bg_secondary'])],
+                  foreground=[('selected', self.COLORS['accent'])])
         style.configure('Dark.TButton', background=self.COLORS['bg_tertiary'],
-                       foreground=self.COLORS['fg'], bordercolor=self.COLORS['border'],
-                       font=('Consolas', 9))
+                        foreground=self.COLORS['fg'], bordercolor=self.COLORS['border'],
+                        font=('Consolas', 9))
         style.map('Dark.TButton', background=[('active', self.COLORS['border'])],
-                 foreground=[('active', self.COLORS['accent'])])
+                  foreground=[('active', self.COLORS['accent'])])
         style.configure('Dark.TCheckbutton', background=self.COLORS['bg'],
-                       foreground=self.COLORS['fg'], font=('Consolas', 9))
+                        foreground=self.COLORS['fg'], font=('Consolas', 9))
+
+    def _toggle_auto_scroll(self):
+        """Callback for the auto-scroll checkbutton."""
+        self._auto_scroll = not self._auto_scroll
 
     def _run_gui(self):
         try:
@@ -181,6 +204,9 @@ class DebugMonitor:
             self.window.geometry("1200x800")
             self.window.configure(bg=self.COLORS['bg'])
             self._configure_dark_theme()
+
+            # Handle the window-manager close button
+            self.window.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
             main_frame = ttk.Frame(self.window, style='Dark.TFrame')
             main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -192,9 +218,9 @@ class DebugMonitor:
             stats = ["API Calls", "Total Tokens", "Avg Response Time", "Errors", "Context Size"]
             for i, stat in enumerate(stats):
                 ttk.Label(stats_frame, text=f"{stat}:", style='Dark.TLabel').grid(
-                    row=0, column=i*2, padx=5, pady=5)
+                    row=0, column=i * 2, padx=5, pady=5)
                 self.stats_labels[stat] = ttk.Label(stats_frame, text="0", style='DarkValue.TLabel')
-                self.stats_labels[stat].grid(row=0, column=i*2+1, padx=5, pady=5)
+                self.stats_labels[stat].grid(row=0, column=i * 2 + 1, padx=5, pady=5)
 
             notebook = ttk.Notebook(main_frame, style='Dark.TNotebook')
             notebook.pack(fill=tk.BOTH, expand=True)
@@ -208,13 +234,13 @@ class DebugMonitor:
                 insertbackground=self.COLORS['accent'],
                 selectbackground=self.COLORS['border'],
                 selectforeground=self.COLORS['fg'],
-                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10,
             )
             self.text_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
             for tag, color in [("timestamp", 'timestamp'), ("prompt", 'prompt'),
-                              ("response", 'response'), ("error", 'error'),
-                              ("info", 'info'), ("warning", 'warning'), ("success", 'success')]:
+                               ("response", 'response'), ("error", 'error'),
+                               ("info", 'info'), ("warning", 'warning'), ("success", 'success')]:
                 self.text_widget.tag_configure(tag, foreground=self.COLORS[color])
 
             prompt_frame = ttk.Frame(notebook, style='DarkSecondary.TFrame')
@@ -225,7 +251,7 @@ class DebugMonitor:
                 insertbackground=self.COLORS['accent'],
                 selectbackground=self.COLORS['border'],
                 selectforeground=self.COLORS['fg'],
-                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10,
             )
             self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
@@ -237,7 +263,7 @@ class DebugMonitor:
                 insertbackground=self.COLORS['accent'],
                 selectbackground=self.COLORS['border'],
                 selectforeground=self.COLORS['fg'],
-                relief=tk.FLAT, borderwidth=0, padx=10, pady=10
+                relief=tk.FLAT, borderwidth=0, padx=10, pady=10,
             )
             self.response_text.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
@@ -245,13 +271,21 @@ class DebugMonitor:
             button_frame.pack(fill=tk.X, pady=(5, 0))
 
             ttk.Button(button_frame, text="Clear Log", command=self._clear_log,
-                      style='Dark.TButton').pack(side=tk.LEFT, padx=5)
+                       style='Dark.TButton').pack(side=tk.LEFT, padx=5)
             ttk.Button(button_frame, text="Save Log", command=self._save_log,
-                      style='Dark.TButton').pack(side=tk.LEFT, padx=5)
+                       style='Dark.TButton').pack(side=tk.LEFT, padx=5)
 
-            self.auto_scroll_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(button_frame, text="Auto-scroll", variable=self.auto_scroll_var,
-                           style='Dark.TCheckbutton').pack(side=tk.LEFT, padx=5)
+            # Use a regular Checkbutton with command callback instead of variable
+            # This avoids BooleanVar threading/GC issues
+            self._auto_scroll_cb = ttk.Checkbutton(
+                button_frame,
+                text="Auto-scroll",
+                command=self._toggle_auto_scroll,
+                style='Dark.TCheckbutton',
+            )
+            self._auto_scroll_cb.pack(side=tk.LEFT, padx=5)
+            # Set initial state to checked
+            self._auto_scroll_cb.state(['selected'])
 
             self.status_label = ttk.Label(button_frame, text="● Ready", style='DarkValue.TLabel')
             self.status_label.pack(side=tk.RIGHT, padx=10)
@@ -262,72 +296,176 @@ class DebugMonitor:
         except Exception as exc:
             self.running = False
             print(f"[ERROR] Debug monitor failed to start: {exc}")
+        finally:
+            # Signal that the GUI thread has fully exited
+            self._shutdown_complete.set()
+
+    def _on_window_close(self):
+        """Handle user clicking the X button on the debug window."""
+        self._do_destroy()
 
     def _process_queue(self):
+        if not self.running:
+            return
         try:
             while True:
                 msg = self.message_queue.get_nowait()
                 self._handle_message(msg)
         except queue.Empty:
             pass
-        if self.running and self.window:
-            self.window.after(100, self._process_queue)
+        if self.running and self.window is not None:
+            try:
+                self.window.after(100, self._process_queue)
+            except tk.TclError:
+                # Window already destroyed
+                self.running = False
 
     def _handle_message(self, msg: Dict[str, Any]):
         msg_type = msg.get("type", "info")
         if msg_type == "log":
             self._append_log(msg.get("text", ""), msg.get("tag", "info"))
         elif msg_type == "prompt":
-            self.prompt_text.delete(1.0, tk.END)
-            self.prompt_text.insert(tk.END, msg.get("text", ""))
+            if self.prompt_text is not None:
+                try:
+                    self.prompt_text.delete(1.0, tk.END)
+                    self.prompt_text.insert(tk.END, msg.get("text", ""))
+                except tk.TclError:
+                    pass
             self._append_log(f"▶ Sent prompt ({len(msg.get('text', ''))} chars)", "prompt")
         elif msg_type == "response":
-            self.response_text.delete(1.0, tk.END)
-            self.response_text.insert(tk.END, msg.get("text", ""))
+            if self.response_text is not None:
+                try:
+                    self.response_text.delete(1.0, tk.END)
+                    self.response_text.insert(tk.END, msg.get("text", ""))
+                except tk.TclError:
+                    pass
             self._append_log(f"◀ Received response ({len(msg.get('text', ''))} chars)", "response")
         elif msg_type == "stats":
             for key, value in msg.get("data", {}).items():
                 if key in self.stats_labels:
-                    self.stats_labels[key].config(text=str(value))
+                    try:
+                        self.stats_labels[key].config(text=str(value))
+                    except tk.TclError:
+                        pass
         elif msg_type == "status":
-            if hasattr(self, 'status_label'):
-                self.status_label.config(text=msg.get("text", ""))
+            if self.status_label is not None:
+                try:
+                    self.status_label.config(text=msg.get("text", ""))
+                except tk.TclError:
+                    pass
 
     def _append_log(self, text: str, tag: str = "info"):
-        if self.text_widget:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self.text_widget.insert(tk.END, f"[{timestamp}] ", "timestamp")
-            self.text_widget.insert(tk.END, f"{text}\n", tag)
-            if self.auto_scroll_var.get():
-                self.text_widget.see(tk.END)
+        if self.text_widget is not None:
+            try:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self.text_widget.insert(tk.END, f"[{timestamp}] ", "timestamp")
+                self.text_widget.insert(tk.END, f"{text}\n", tag)
+                if self._auto_scroll:
+                    self.text_widget.see(tk.END)
+            except tk.TclError:
+                # Widget destroyed
+                pass
 
     def _clear_log(self):
-        if self.text_widget:
-            self.text_widget.delete(1.0, tk.END)
-            self._append_log("Log cleared", "info")
+        if self.text_widget is not None:
+            try:
+                self.text_widget.delete(1.0, tk.END)
+                self._append_log("Log cleared", "info")
+            except tk.TclError:
+                pass
 
     def _save_log(self):
-        if self.text_widget:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"correlator_log_{timestamp}.txt"
-            with open(filename, "w") as f:
-                f.write(self.text_widget.get(1.0, tk.END))
-            self._append_log(f"Log saved to {filename}", "success")
+        if self.text_widget is not None:
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"correlator_log_{timestamp}.txt"
+                content = self.text_widget.get(1.0, tk.END)
+                with open(filename, "w") as f:
+                    f.write(content)
+                self._append_log(f"Log saved to {filename}", "success")
+            except tk.TclError:
+                pass
+            except IOError as e:
+                self._append_log(f"Failed to save log: {e}", "error")
 
     def log(self, text: str, tag: str = "info"):
-        self.message_queue.put({"type": "log", "text": text, "tag": tag})
+        if self.running:
+            self.message_queue.put({"type": "log", "text": text, "tag": tag})
 
     def log_prompt(self, text: str):
-        self.message_queue.put({"type": "prompt", "text": text})
+        if self.running:
+            self.message_queue.put({"type": "prompt", "text": text})
 
     def log_response(self, text: str):
-        self.message_queue.put({"type": "response", "text": text})
+        if self.running:
+            self.message_queue.put({"type": "response", "text": text})
 
     def update_stats(self, stats: Dict[str, Any]):
-        self.message_queue.put({"type": "stats", "data": stats})
+        if self.running:
+            self.message_queue.put({"type": "stats", "data": stats})
 
     def set_status(self, text: str):
-        self.message_queue.put({"type": "status", "text": text})
+        if self.running:
+            self.message_queue.put({"type": "status", "text": text})
+
+    def shutdown(self):
+        """Close the Tk window and stop the GUI loop."""
+        if not self.running:
+            return
+
+        self.running = False
+
+        try:
+            if self.window is not None:
+                # Schedule destroy on the Tk thread (Tk is not thread-safe)
+                self.window.after(0, self._do_destroy)
+        except Exception:
+            pass
+
+        # Wait for the GUI thread to finish with timeout
+        self._shutdown_complete.wait(timeout=3.0)
+
+        # Ensure thread is joined
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def _do_destroy(self):
+        """Called on the Tk mainloop thread to actually destroy the window.
+
+        Must clean up all Tk resources while still on the Tk thread to avoid
+        threading errors during garbage collection.
+        """
+        self.running = False
+
+        try:
+            # Clear all widget references BEFORE destroying window
+            # This allows them to be GC'd while Tk is still valid
+            self.text_widget = None
+            self.prompt_text = None
+            self.response_text = None
+            self.status_label = None
+            self.stats_labels.clear()
+
+            # Force a GC pass while Tk is still alive to clean up any
+            # Tk-associated objects (prevents "main thread not in main loop")
+            gc.collect()
+
+            if self.window is not None:
+                try:
+                    self.window.quit()
+                except Exception:
+                    pass
+                try:
+                    self.window.destroy()
+                except Exception:
+                    pass
+                self.window = None
+
+        except Exception:
+            pass
+        finally:
+            self._shutdown_complete.set()
 
 
 class RollingContextManager:
@@ -340,10 +478,8 @@ class RollingContextManager:
     ):
         self.max_context_tokens = max_context_tokens
         self.max_response_tokens = max_response_tokens
-        # Total available = context - response reserve
         self.max_prompt_tokens = max_context_tokens - max_response_tokens
 
-        # More conservative token estimation for JSON responses
         self.chars_per_token = OLLAMA_CHARS_PER_TOKEN
         self.tokens_per_correlation = OLLAMA_TOKENS_PER_CORRELATION
         self.token_estimate_buffer = OLLAMA_TOKEN_ESTIMATE_BUFFER
@@ -363,7 +499,6 @@ class RollingContextManager:
 
     def calculate_max_transmissions(self, num_adsb: int) -> int:
         """Calculate how many transmissions we can safely process."""
-        # Each transmission needs ~180 tokens in response
         available_response = self.max_response_tokens - self.response_json_overhead
         max_tx = available_response // self.tokens_per_correlation
         return min(max_tx, self.max_transmission_batch)
@@ -376,18 +511,15 @@ class RollingContextManager:
         format_transmissions_func,
     ) -> tuple[str, int, int]:
         """Build prompt that fits within context window."""
-        # Calculate available prompt budget
         available = self.max_prompt_tokens - self.system_prompt_tokens
 
         template = self._get_analysis_template()
         template_tokens = self._estimate_tokens(template)
         available -= template_tokens
 
-        # Allocate prompt budget between ADS-B contacts and transmissions
         adsb_budget = int(available * self.adsb_prompt_ratio)
         tx_budget = available - adsb_budget
 
-        # Select ADS-B contacts that fit
         adsb_included = []
         adsb_tokens = 0
         for contact in reversed(adsb_data):
@@ -399,10 +531,8 @@ class RollingContextManager:
             else:
                 break
 
-        # Calculate max transmissions based on response budget
         max_tx = self.calculate_max_transmissions(len(adsb_included))
 
-        # Select transmissions that fit both prompt budget AND response budget
         tx_included = []
         tx_tokens = 0
         for tx in reversed(transmissions):
@@ -419,7 +549,10 @@ class RollingContextManager:
         adsb_text = format_adsb_func(adsb_included)
         tx_text = format_transmissions_func(tx_included)
 
-        prompt = f"{self.system_prompt}\n\n{template.format(adsb_data=adsb_text, tx_data=tx_text, num_tx=len(tx_included))}"
+        prompt = (
+            f"{self.system_prompt}\n\n"
+            f"{template.format(adsb_data=adsb_text, tx_data=tx_text, num_tx=len(tx_included))}"
+        )
 
         return prompt, len(adsb_included), len(tx_included)
 
@@ -448,31 +581,40 @@ class ContextBuilder:
         self.preview_chars = preview_chars
 
     def build_system_prompt(self) -> str:
-        return """ATC correlation analyst. Match transmissions to ADS-B using fuzzy logic.
-
-AIRLINE CODES: DAL=Delta UAL=United AAL=American SWA=Southwest JBU=JetBlue ASA=Alaska SKW=SkyWest ENY=Envoy RPA=Republic FFT=Frontier NKS=Spirit
-
-FUZZY MATCH RULES:
-- Numbers: DAL2617="Delta 26 17"="Delta 2617"="Delta 2 6 1 7"
-- Phonetic: tree=3 fife=5 niner=9
-- Errors: 5↔9 B↔D↔P M↔N common, off-by-one OK
-- Partial: "Delta 617"→DAL2617/DAL1617, suffix "...17"→*17
-- Transcription: "delta"→"data"/"dealt", split words OK
-
-CONFIDENCE: exact=0.95, 1-digit-off=0.80, partial=0.70, fuzzy=0.60, unclear=0.30
-
-MATCH if conf≥0.50. ALERT only if: extraction≥0.80, definitely absent, alert_conf≥0.70
-
-MILITARY: REACH RCH VIPER EAGLE HAMMER KING RESCUE EVAC DUKE
-
-OUTPUT (keep reasoning SHORT):
-{"correlations":[{"transmission_id":0,"extracted_identifier":"text","extraction_confidence":0.8,"matched_icao":"ICAO/NO_MATCH/UNCLEAR","matched_callsign":"CS","match_confidence":0.7,"reasoning":"brief","flags":[]}],"alerts":[],"summary":"brief"}"""
+        return (
+            "ATC correlation analyst. Match transmissions to ADS-B using fuzzy logic.\n"
+            "\n"
+            "AIRLINE CODES: DAL=Delta UAL=United AAL=American SWA=Southwest "
+            "JBU=JetBlue ASA=Alaska SKW=SkyWest ENY=Envoy RPA=Republic FFT=Frontier NKS=Spirit\n"
+            "\n"
+            "FUZZY MATCH RULES:\n"
+            '- Numbers: DAL2617="Delta 26 17"="Delta 2617"="Delta 2 6 1 7"\n'
+            "- Phonetic: tree=3 fife=5 niner=9\n"
+            "- Errors: 5↔9 B↔D↔P M↔N common, off-by-one OK\n"
+            '- Partial: "Delta 617"→DAL2617/DAL1617, suffix "...17"→*17\n'
+            '- Transcription: "delta"→"data"/"dealt", split words OK\n'
+            "\n"
+            "CONFIDENCE: exact=0.95, 1-digit-off=0.80, partial=0.70, fuzzy=0.60, unclear=0.30\n"
+            "\n"
+            "MATCH if conf≥0.50. ALERT only if: extraction≥0.80, definitely absent, alert_conf≥0.70\n"
+            "\n"
+            "MILITARY: REACH RCH VIPER EAGLE HAMMER KING RESCUE EVAC DUKE\n"
+            "\n"
+            "OUTPUT (keep reasoning SHORT):\n"
+            '{"correlations":[{"transmission_id":0,"extracted_identifier":"text",'
+            '"extraction_confidence":0.8,"matched_icao":"ICAO/NO_MATCH/UNCLEAR",'
+            '"matched_callsign":"CS","match_confidence":0.7,"reasoning":"brief","flags":[]}],'
+            '"alerts":[],"summary":"brief"}'
+        )
 
     def _format_adsb(self, contacts: Sequence[ADSBContact]) -> str:
         lines: List[str] = []
         for contact in contacts:
             cs = contact.callsign or "----"
-            lines.append(f"{contact.icao} {cs:8} {contact.altitude}ft {contact.heading:03}° {contact.speed}kt")
+            lines.append(
+                f"{contact.icao} {cs:8} {contact.altitude}ft "
+                f"{contact.heading:03}° {contact.speed}kt"
+            )
         return "\n".join(lines) if lines else "(none)"
 
     def _format_transmissions(self, txs: Sequence[ATCTransmission]) -> str:
@@ -482,12 +624,19 @@ OUTPUT (keep reasoning SHORT):
                 text = tx.text[: self.preview_chars] + "..."
             else:
                 text = tx.text
-            lines.append(f"[{idx}] {tx.channel_name}: \"{text}\"")
+            lines.append(f'[{idx}] {tx.channel_name}: "{text}"')
         return "\n".join(lines) if lines else "(none)"
 
 
 class OllamaCorrelator:
-    """Query an Ollama-hosted model to correlate ATC transmissions."""
+    """Query an Ollama-hosted model to correlate ATC transmissions.
+
+    Supports the context-manager protocol so the model is always unloaded
+    cleanly from VRAM::
+
+        with OllamaCorrelator() as correlator:
+            result = correlator.correlate(adsb_data, transmissions)
+    """
 
     def __init__(
         self,
@@ -497,9 +646,12 @@ class OllamaCorrelator:
         max_transmissions: int = LLM_MAX_TRANSMISSIONS,
         request_timeout: int = OLLAMA_REQUEST_TIMEOUT,
         enable_debug_monitor: bool = OLLAMA_ENABLE_DEBUG_MONITOR,
+        keep_alive: str = OLLAMA_KEEP_ALIVE,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.keep_alive = keep_alive
+        self._closed = False
         self.context_builder = ContextBuilder(
             max_adsb_contacts=max_adsb_contacts,
             max_transmissions=max_transmissions,
@@ -510,7 +662,7 @@ class OllamaCorrelator:
         )
         self.request_timeout = request_timeout
 
-        self.stats = {
+        self.stats: Dict[str, Any] = {
             "API Calls": 0,
             "Total Tokens": 0,
             "Avg Response Time": "0.0s",
@@ -519,47 +671,151 @@ class OllamaCorrelator:
         }
         self._response_times: List[float] = []
 
-        self.debug_monitor = None
+        # ---- debug monitor setup ----
+        self.debug_monitor: Optional[DebugMonitor] = None
         if enable_debug_monitor:
             if not HAS_TK:
                 if sys.platform.startswith("linux"):
-                    print("[WARN] Tkinter not available; install python3-tk to enable the debug monitor.")
+                    print(
+                        "[WARN] Tkinter not available; install python3-tk "
+                        "to enable the debug monitor."
+                    )
                 else:
                     print("[WARN] Tkinter not available; debug monitor disabled.")
             elif not _has_display():
-                print("[WARN] No GUI display detected (DISPLAY/WAYLAND_DISPLAY); debug monitor disabled.")
+                print(
+                    "[WARN] No GUI display detected (DISPLAY/WAYLAND_DISPLAY); "
+                    "debug monitor disabled."
+                )
             else:
                 self.debug_monitor = DebugMonitor()
                 time.sleep(OLLAMA_DEBUG_MONITOR_DELAY)
 
+        # ---- system prompt ----
         system_prompt = self.context_builder.build_system_prompt()
         self.rolling_context.set_system_prompt(system_prompt)
 
+        # ---- safety-net: always unload on interpreter exit ----
+        atexit.register(self.close)
+
         self._log("Correlator initialized", "info")
         self._log(f"Model: {model}", "info")
-        self._log(f"System prompt: ~{self.rolling_context.system_prompt_tokens} tokens", "info")
+        self._log(f"Keep-alive: {keep_alive}", "info")
+        self._log(
+            f"System prompt: ~{self.rolling_context.system_prompt_tokens} tokens", "info"
+        )
         self._log(f"Max prompt: {self.rolling_context.max_prompt_tokens} tokens", "info")
-        self._log(f"Max response: {self.rolling_context.max_response_tokens} tokens", "info")
+        self._log(
+            f"Max response: {self.rolling_context.max_response_tokens} tokens", "info"
+        )
 
-    def _log(self, message: str, tag: str = "info"):
-        if self.debug_monitor:
+    # ------------------------------------------------------------------
+    # Context-manager & lifecycle
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "OllamaCorrelator":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
+
+    def __del__(self) -> None:
+        # Last-resort fallback; do not rely on this alone.
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def unload_model(self) -> None:
+        """Ask Ollama to evict the model from VRAM immediately.
+
+        Sending ``keep_alive: 0`` tells Ollama to unload the model as soon
+        as the (empty) request completes.
+        """
+        try:
+            self._log(f"Unloading model '{self.model}' from VRAM...", "warning")
+            resp = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": "",
+                    "keep_alive": 0,
+                },
+                timeout=15,
+            )
+            if resp.ok:
+                self._log(f"Model '{self.model}' unloaded from VRAM", "success")
+            else:
+                self._log(
+                    f"Model unload returned {resp.status_code}: {resp.text[:200]}",
+                    "warning",
+                )
+        except requests.exceptions.ConnectionError:
+            self._log(
+                "Ollama not reachable during unload (may already be stopped)",
+                "warning",
+            )
+        except Exception as exc:
+            self._log(f"Error unloading model: {exc}", "error")
+
+    def close(self) -> None:
+        """Gracefully shut down: unload model from VRAM, close debug monitor."""
+        if self._closed:
+            return
+        self._closed = True
+
+        self._log("Shutting down correlator...", "warning")
+
+        # Unload the model first (while we can still log)
+        self.unload_model()
+
+        # Tear down the debug monitor
+        if self.debug_monitor is not None:
+            self.debug_monitor.shutdown()
+            self.debug_monitor = None
+
+        # De-register atexit so it doesn't fire twice
+        try:
+            atexit.unregister(self.close)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Logging / stats helpers
+    # ------------------------------------------------------------------
+
+    def _log(self, message: str, tag: str = "info") -> None:
+        if self.debug_monitor is not None:
             self.debug_monitor.log(message, tag)
         else:
             print(f"[{tag.upper()}] {message}")
 
-    def _update_stats(self):
-        if self.debug_monitor:
+    def _update_stats(self) -> None:
+        if self.debug_monitor is not None:
             self.debug_monitor.update_stats(self.stats)
 
-    def _set_status(self, status: str):
-        if self.debug_monitor:
+    def _set_status(self, status: str) -> None:
+        if self.debug_monitor is not None:
             self.debug_monitor.set_status(status)
+
+    # ------------------------------------------------------------------
+    # Core correlation
+    # ------------------------------------------------------------------
 
     def correlate(
         self,
         adsb_data: Sequence[ADSBContact],
         transmissions: Sequence[ATCTransmission],
     ) -> dict:
+        if self._closed:
+            return {
+                "error": "Correlator has been shut down",
+                "correlations": [],
+                "alerts": [],
+                "summary": "Shut down",
+            }
+
         if not transmissions:
             self._log("No transmissions to analyze", "warning")
             return {"correlations": [], "alerts": [], "summary": "No transmissions"}
@@ -578,15 +834,28 @@ class OllamaCorrelator:
 
         prompt_tokens = self.rolling_context._estimate_tokens(prompt)
         total_budget = prompt_tokens + self.rolling_context.max_response_tokens
-        self.stats["Context Size"] = f"{prompt_tokens}+{self.rolling_context.max_response_tokens}/{self.rolling_context.max_context_tokens}"
+        self.stats["Context Size"] = (
+            f"{prompt_tokens}+{self.rolling_context.max_response_tokens}"
+            f"/{self.rolling_context.max_context_tokens}"
+        )
 
         if total_budget > self.rolling_context.max_context_tokens:
-            self._log(f"WARNING: Budget overflow! {total_budget} > {self.rolling_context.max_context_tokens}", "error")
+            self._log(
+                f"WARNING: Budget overflow! {total_budget} > "
+                f"{self.rolling_context.max_context_tokens}",
+                "error",
+            )
 
-        self._log(f"Prompt: {num_adsb} contacts, {num_tx} transmissions, ~{prompt_tokens} tokens", "info")
-        self._log(f"Expected response: ~{num_tx * self.rolling_context.tokens_per_correlation} tokens", "info")
+        self._log(
+            f"Prompt: {num_adsb} contacts, {num_tx} transmissions, ~{prompt_tokens} tokens",
+            "info",
+        )
+        self._log(
+            f"Expected response: ~{num_tx * self.rolling_context.tokens_per_correlation} tokens",
+            "info",
+        )
 
-        if self.debug_monitor:
+        if self.debug_monitor is not None:
             self.debug_monitor.log_prompt(prompt)
 
         try:
@@ -598,6 +867,7 @@ class OllamaCorrelator:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
+                    "keep_alive": self.keep_alive,
                     "options": {
                         "temperature": OLLAMA_TEMPERATURE,
                         "num_predict": self.rolling_context.max_response_tokens,
@@ -620,18 +890,26 @@ class OllamaCorrelator:
             result = response.json()
             response_text = result.get("response", "")
 
-            if self.debug_monitor:
+            if self.debug_monitor is not None:
                 self.debug_monitor.log_response(response_text)
 
             eval_count = result.get("eval_count", 0)
             prompt_eval_count = result.get("prompt_eval_count", 0)
             self.stats["Total Tokens"] += eval_count + prompt_eval_count
 
-            self._log(f"Response: {elapsed:.1f}s (prompt: {prompt_eval_count}, response: {eval_count} tokens)", "response")
+            self._log(
+                f"Response: {elapsed:.1f}s "
+                f"(prompt: {prompt_eval_count}, response: {eval_count} tokens)",
+                "response",
+            )
 
             # Check for truncation
-            if eval_count >= self.rolling_context.max_response_tokens - OLLAMA_RESPONSE_SAFETY_MARGIN:
-                self._log("WARNING: Response likely truncated (hit token limit)", "warning")
+            if eval_count >= (
+                self.rolling_context.max_response_tokens - OLLAMA_RESPONSE_SAFETY_MARGIN
+            ):
+                self._log(
+                    "WARNING: Response likely truncated (hit token limit)", "warning"
+                )
                 response_text = self._attempt_json_repair(response_text)
             elif not response_text.rstrip().endswith("}"):
                 self._log("Warning: Response may be incomplete", "warning")
@@ -649,7 +927,8 @@ class OllamaCorrelator:
             if "alerts" in parsed and isinstance(parsed["alerts"], list):
                 original_count = len(parsed["alerts"])
                 parsed["alerts"] = [
-                    alert for alert in parsed["alerts"]
+                    alert
+                    for alert in parsed["alerts"]
                     if alert.get("confidence", 0) >= OLLAMA_ALERT_CONFIDENCE_THRESHOLD
                 ]
                 filtered = original_count - len(parsed["alerts"])
@@ -657,13 +936,22 @@ class OllamaCorrelator:
                     self._log(f"Filtered {filtered} low-confidence alerts", "info")
 
             if "correlations" in parsed:
-                matches = sum(1 for c in parsed["correlations"]
-                            if c.get("matched_icao") not in ["NO_MATCH", "UNCLEAR", None])
-                self._log(f"Matches: {matches}/{len(parsed['correlations'])}", "success")
+                matches = sum(
+                    1
+                    for c in parsed["correlations"]
+                    if c.get("matched_icao") not in ["NO_MATCH", "UNCLEAR", None]
+                )
+                self._log(
+                    f"Matches: {matches}/{len(parsed['correlations'])}", "success"
+                )
 
             if parsed.get("alerts"):
                 for alert in parsed["alerts"]:
-                    self._log(f"ALERT: {alert.get('type')} - {alert.get('callsign')} ({alert.get('confidence', 0):.2f})", "warning")
+                    self._log(
+                        f"ALERT: {alert.get('type')} - {alert.get('callsign')} "
+                        f"({alert.get('confidence', 0):.2f})",
+                        "warning",
+                    )
 
             self._update_stats()
             self._set_status("● Ready")
@@ -688,32 +976,36 @@ class OllamaCorrelator:
             self._set_status("● Error")
             return {"error": str(exc), "raw": ""}
 
+    # ------------------------------------------------------------------
+    # JSON repair / parse
+    # ------------------------------------------------------------------
+
     def _attempt_json_repair(self, text: str) -> str:
         text = text.rstrip()
 
-        open_braces = text.count('{') - text.count('}')
-        open_brackets = text.count('[') - text.count(']')
+        open_braces = text.count("{") - text.count("}")
+        open_brackets = text.count("[") - text.count("]")
 
         if open_braces > 0 or open_brackets > 0:
-            self._log(f"Repairing JSON: missing {open_braces} braces, {open_brackets} brackets", "warning")
+            self._log(
+                f"Repairing JSON: missing {open_braces} braces, "
+                f"{open_brackets} brackets",
+                "warning",
+            )
 
-            # Try to find last complete JSON element
-            # Look for patterns that indicate end of valid data
             repair_point = len(text)
-
-            # Find last complete correlation or alert entry
             for pattern in ['"}', "']", "},", "],", "}"]:
                 pos = text.rfind(pattern)
                 if pos > 0:
-                    # Check if this is inside a string
                     repair_point = min(repair_point, pos + len(pattern))
 
-            # Trim to last good position if we found partial content
             if repair_point < len(text):
                 text = text[:repair_point]
 
-            # Close all open brackets
-            text += "]" * open_brackets + "}" * open_braces
+            # Re-count after trim
+            open_braces = text.count("{") - text.count("}")
+            open_brackets = text.count("[") - text.count("]")
+            text += "]" * max(open_brackets, 0) + "}" * max(open_braces, 0)
 
             self._log("JSON repair applied", "info")
 
@@ -738,12 +1030,17 @@ class OllamaCorrelator:
                 return parsed
         except json.JSONDecodeError as e:
             self._log(f"JSON parse error at pos {e.pos}: {e.msg}", "error")
-            if hasattr(e, 'pos') and e.pos:
+            if hasattr(e, "pos") and e.pos:
                 start_ctx = max(0, e.pos - 30)
                 end_ctx = min(len(text), e.pos + 30)
                 self._log(f"Error context: ...{text[start_ctx:end_ctx]}...", "error")
 
         return {"error": "Failed to parse LLM response", "raw": text}
+
+
+# -----------------------------------------------------------------------
+# Module-level helpers
+# -----------------------------------------------------------------------
 
 
 def build_adsb_contacts(aircraft_iterable: Iterable[Aircraft]) -> List[ADSBContact]:
@@ -815,7 +1112,9 @@ def build_atc_transmission(
 
 def _has_display() -> bool:
     if sys.platform.startswith("linux"):
-        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        return bool(
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        )
     return True
 
 
