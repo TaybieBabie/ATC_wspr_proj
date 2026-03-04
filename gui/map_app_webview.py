@@ -435,39 +435,24 @@ class OpenSkyMapApp:
 
                 // Play/pause locally recorded audio for transcript cross-checking
                 window.activeTransmissionAudio = null;
-                window.activeTransmissionButton = null;
                 window.playTransmissionAudio = function(audioSrc, buttonEl) {{
                     if (!audioSrc) {{
                         return;
                     }}
 
-                    const isSameSource = window.activeTransmissionAudio && window.activeTransmissionAudio.src === audioSrc;
-                    if (!isSameSource && window.activeTransmissionAudio) {{
+                    if (window.activeTransmissionAudio && window.activeTransmissionAudio.src !== audioSrc) {{
                         window.activeTransmissionAudio.pause();
                     }}
-                    if (!isSameSource && window.activeTransmissionButton) {{
-                        window.activeTransmissionButton.textContent = '▶';
-                    }}
 
-                    if (!isSameSource) {{
+                    if (!window.activeTransmissionAudio || window.activeTransmissionAudio.src !== audioSrc) {{
                         window.activeTransmissionAudio = new Audio(audioSrc);
                     }}
 
-                    const audio = window.activeTransmissionAudio;
-                    window.activeTransmissionButton = buttonEl || null;
-
+                    var audio = window.activeTransmissionAudio;
                     if (audio.paused) {{
-                        const playPromise = audio.play();
+                        audio.play();
                         if (buttonEl) {{
                             buttonEl.textContent = '⏸';
-                        }}
-                        if (playPromise && typeof playPromise.catch === 'function') {{
-                            playPromise.catch((err) => {{
-                                console.error('[ATC] Transmission audio playback failed', err);
-                                if (buttonEl) {{
-                                    buttonEl.textContent = '▶';
-                                }}
-                            }});
                         }}
                     }} else {{
                         audio.pause();
@@ -476,9 +461,9 @@ class OpenSkyMapApp:
                         }}
                     }}
 
-                    audio.onended = () => {{
-                        if (window.activeTransmissionButton) {{
-                            window.activeTransmissionButton.textContent = '▶';
+                    audio.onended = function() {{
+                        if (buttonEl) {{
+                            buttonEl.textContent = '▶';
                         }}
                     }};
                 }};
