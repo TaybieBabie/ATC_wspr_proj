@@ -1,3 +1,50 @@
+import os
+import ctypes
+import importlib
+
+def preload_cudnn():
+    """Load cuDNN shared libraries before ctranslate2 tries to find them."""
+    # Try to find the nvidia.cudnn pip package
+    try:
+        nvidia_cudnn = importlib.import_module("nvidia.cudnn")
+        cudnn_lib_dir = os.path.join(os.path.dirname(nvidia_cudnn.__file__), "lib")
+    except ImportError:
+        # Fallback: hardcode the path
+        cudnn_lib_dir = os.path.expanduser(
+            "~/.local/lib/python3.13/site-packages/nvidia/cudnn/lib"
+        )
+
+    if not os.path.isdir(cudnn_lib_dir):
+        print(f"WARNING: cuDNN lib directory not found at {cudnn_lib_dir}")
+        return
+
+    # These must be loaded in dependency order
+    libs_to_load = [
+        "libcudnn_ops.so.9",
+        "libcudnn_cnn.so.9",
+        "libcudnn_adv.so.9",
+        "libcudnn_engines_precompiled.so.9",
+        "libcudnn_engines_runtime_compiled.so.9",
+        "libcudnn_heuristic.so.9",
+        "libcudnn_graph.so.9",
+        "libcudnn.so.9",
+    ]
+
+    for lib_name in libs_to_load:
+        lib_path = os.path.join(cudnn_lib_dir, lib_name)
+        if os.path.exists(lib_path):
+            try:
+                ctypes.cdll.LoadLibrary(lib_path)
+                print(f"  Loaded: {lib_name}")
+            except OSError as e:
+                print(f"  FAILED to load {lib_name}: {e}")
+        else:
+            print(f"  Not found: {lib_path}")
+
+print("Pre-loading cuDNN libraries...")
+preload_cudnn()
+
+# ---- NOW import everything else ----
 import argparse
 import json
 import os
