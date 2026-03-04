@@ -485,8 +485,9 @@ class MultiChannelATCMonitor:
                 tx = recent_transmissions[tx_id]
                 matched_icao = correlation.get('matched_icao', 'NO_MATCH')
                 matched_callsign = correlation.get('matched_callsign', '') or ''
+                raw_confidence = correlation.get('match_confidence', correlation.get('confidence', 0.0))
                 try:
-                    confidence = float(correlation.get('confidence', 0.0))
+                    confidence = float(raw_confidence)
                 except (TypeError, ValueError):
                     confidence = 0.0
                 flags = correlation.get('flags', []) or []
