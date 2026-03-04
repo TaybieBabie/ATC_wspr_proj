@@ -324,6 +324,9 @@ class DebugMonitor:
         msg_type = msg.get("type", "info")
         if msg_type == "log":
             self._append_log(msg.get("text", ""), msg.get("tag", "info"))
+        elif msg_type == "shutdown":
+            # Handle destruction from the Tk thread only.
+            self._do_destroy()
         elif msg_type == "prompt":
             if self.prompt_text is not None:
                 try:
@@ -413,12 +416,10 @@ class DebugMonitor:
         if not self.running:
             return
 
-        self.running = False
-
         try:
-            if self.window is not None:
-                # Schedule destroy on the Tk thread (Tk is not thread-safe)
-                self.window.after(0, self._do_destroy)
+            # Never call Tk APIs from this thread. Ask the Tk thread to
+            # perform teardown through the queue.
+            self.message_queue.put_nowait({"type": "shutdown"})
         except Exception:
             pass
 
