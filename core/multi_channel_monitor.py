@@ -3,6 +3,7 @@ multi_channel_monitor.py - Multi-channel ATC monitoring system
 """
 import os
 import re
+import shutil
 import tarfile
 import time
 import threading
@@ -272,6 +273,12 @@ class MultiChannelATCMonitor:
         os.makedirs(session_dir, exist_ok=True)
         return session_dir
 
+    def _format_session_time(self, dt_value):
+        """Return 12-hour time (hh:mm AM/PM) for session labeling."""
+        if not dt_value:
+            return "00:00 AM"
+        return dt_value.strftime("%I:%M %p")
+
     def _create_logs_day_dir(self):
         """Create logs/<month>/<day> hierarchy on demand."""
         if not self.session_start_time:
@@ -292,8 +299,8 @@ class MultiChannelATCMonitor:
             self.session_end_time = datetime.now()
 
         day_dir = self.logs_day_dir or self._create_logs_day_dir()
-        start_str = self.session_start_time.strftime("%H-%M-%S")
-        end_str = self.session_end_time.strftime("%H-%M-%S")
+        start_str = self._format_session_time(self.session_start_time)
+        end_str = self._format_session_time(self.session_end_time)
         final_dir = os.path.join(day_dir, f"{start_str}-{end_str}")
         os.makedirs(final_dir, exist_ok=True)
         self.session_dir = final_dir
@@ -328,7 +335,7 @@ class MultiChannelATCMonitor:
 
         self._create_logs_day_dir()
         start_stamp = self.session_start_time.strftime('%Y%m%d_%H%M%S')
-        provisional_session_dir = os.path.join(self.logs_day_dir, f"{self.session_start_time.strftime('%H-%M-%S')}-ongoing")
+        provisional_session_dir = os.path.join(self.logs_day_dir, f"{self._format_session_time(self.session_start_time)}-ongoing")
         os.makedirs(provisional_session_dir, exist_ok=True)
         self.session_dir = provisional_session_dir
 
@@ -635,11 +642,17 @@ class MultiChannelATCMonitor:
                             self.session_llm_log_path = target_path
 
             ongoing_dir = self.session_dir
-            if os.path.isdir(ongoing_dir) and ongoing_dir.endswith('-ongoing') and ongoing_dir != final_dir:
-                try:
-                    os.rmdir(ongoing_dir)
-                except OSError:
-                    pass
+            if os.path.isdir(ongoing_dir) and ongoing_dir.endswith('-ongoing') and os.path.abspath(ongoing_dir) != os.path.abspath(final_dir):
+                for entry in os.listdir(ongoing_dir):
+                    src_path = os.path.join(ongoing_dir, entry)
+                    dst_path = os.path.join(final_dir, entry)
+                    if os.path.abspath(src_path) == os.path.abspath(dst_path):
+                        continue
+                    if os.path.exists(dst_path):
+                        continue
+                    shutil.move(src_path, dst_path)
+
+                shutil.rmtree(ongoing_dir, ignore_errors=True)
 
             self.session_dir = final_dir
         except Exception as exc:
@@ -718,8 +731,8 @@ class MultiChannelATCMonitor:
             self.session_end_time = datetime.now()
 
         airport_code = self._session_airport_code()
-        start_str = self.session_start_time.strftime("%H-%M-%S")
-        end_str = self.session_end_time.strftime("%H-%M-%S")
+        start_str = self._format_session_time(self.session_start_time)
+        end_str = self._format_session_time(self.session_end_time)
         date_str = self.session_start_time.strftime("%Y-%m-%d")
 
         session_dir = self.session_dir or self._finalize_session_dir()
