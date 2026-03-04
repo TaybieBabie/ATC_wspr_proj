@@ -435,6 +435,7 @@ class OpenSkyMapApp:
 
                 // Play/pause locally recorded audio for transcript cross-checking
                 window.activeTransmissionAudio = null;
+                window.transmissionAudioSources = window.transmissionAudioSources || {{}};
                 window.playTransmissionAudio = function(audioSrc, buttonEl) {{
                     if (!audioSrc) {{
                         return;
@@ -446,11 +447,17 @@ class OpenSkyMapApp:
 
                     if (!window.activeTransmissionAudio || window.activeTransmissionAudio.src !== audioSrc) {{
                         window.activeTransmissionAudio = new Audio(audioSrc);
+                        window.activeTransmissionAudio.load();
                     }}
 
                     var audio = window.activeTransmissionAudio;
                     if (audio.paused) {{
-                        audio.play();
+                        var playPromise = audio.play();
+                        if (playPromise && typeof playPromise.catch === 'function') {{
+                            playPromise.catch(function(err) {{
+                                console.error('[ATC] Audio play failed:', err);
+                            }});
+                        }}
                         if (buttonEl) {{
                             buttonEl.textContent = '⏸';
                         }}
@@ -466,6 +473,14 @@ class OpenSkyMapApp:
                             buttonEl.textContent = '▶';
                         }}
                     }};
+                }};
+                window.playTransmissionAudioById = function(audioId, buttonEl) {{
+                    var src = window.transmissionAudioSources[audioId];
+                    if (!src) {{
+                        console.warn('[ATC] Missing audio source for id:', audioId);
+                        return;
+                    }}
+                    window.playTransmissionAudio(src, buttonEl);
                 }};
 
                 // Create transcript display
@@ -1087,7 +1102,8 @@ class OpenSkyMapApp:
             self.displayed_transcripts.pop(0)
 
         transcript_html = ""
-        for trans in self.displayed_transcripts:
+        audio_sources = {}
+        for idx, trans in enumerate(self.displayed_transcripts):
             color = trans.get('color', '#00D4FF')
             timestamp = trans.get('timestamp', datetime.now().isoformat())
             time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp
@@ -1095,10 +1111,11 @@ class OpenSkyMapApp:
             audio_src = self._build_audio_source(audio_file)
             play_button_html = ""
             if audio_src:
-                escaped_audio_src = json.dumps(audio_src)
+                audio_id = f"t{idx}"
+                audio_sources[audio_id] = audio_src
                 play_button_html = (
                     "<button "
-                    "onclick=\"window.playTransmissionAudio(" + escaped_audio_src + ", this)\" "
+                    f"onclick=\"window.playTransmissionAudioById('{audio_id}', this)\" "
                     "style=\"float: right; margin-left: 8px; background: #001F2B; color: #00D4FF; "
                     "border: 1px solid #00D4FF; border-radius: 3px; padding: 1px 6px; cursor: pointer;\" "
                     "title=\"Play recorded audio\">▶</button>"
@@ -1137,6 +1154,7 @@ class OpenSkyMapApp:
                 totalEl.textContent = {sum(self.channel_counters.values())};
             }}
 
+            window.transmissionAudioSources = {json.dumps(audio_sources)};
             const contentEl = document.getElementById('transcript-content');
             if (contentEl) {{
                 contentEl.innerHTML = `{transcript_html}`;
