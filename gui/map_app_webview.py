@@ -3,6 +3,7 @@ import threading
 import queue
 import json
 import time
+from pathlib import Path
 from collections import deque
 from datetime import datetime
 from utils import config
@@ -428,6 +429,42 @@ class OpenSkyMapApp:
                         btnEl.textContent = 'UNMUTE';
                         btnEl.style.background = '#1A1A1A';
                     }}
+                }};
+
+                // Play/pause locally recorded audio for transcript cross-checking
+                window.activeTransmissionAudio = null;
+                window.playTransmissionAudio = function(audioPath, buttonEl) {{
+                    if (!audioPath) {{
+                        return;
+                    }}
+
+                    if (window.activeTransmissionAudio && window.activeTransmissionAudio.src !== audioPath) {{
+                        window.activeTransmissionAudio.pause();
+                    }}
+
+                    if (!window.activeTransmissionAudio || window.activeTransmissionAudio.src !== audioPath) {{
+                        window.activeTransmissionAudio = new Audio(audioPath);
+                    }}
+
+                    const audio = window.activeTransmissionAudio;
+
+                    if (audio.paused) {{
+                        audio.play();
+                        if (buttonEl) {{
+                            buttonEl.textContent = '⏸';
+                        }}
+                    }} else {{
+                        audio.pause();
+                        if (buttonEl) {{
+                            buttonEl.textContent = '▶';
+                        }}
+                    }}
+
+                    audio.onended = () => {{
+                        if (buttonEl) {{
+                            buttonEl.textContent = '▶';
+                        }}
+                    }};
                 }};
 
                 // Create transcript display
@@ -1028,6 +1065,18 @@ class OpenSkyMapApp:
             color = trans.get('color', '#00D4FF')
             timestamp = trans.get('timestamp', datetime.now().isoformat())
             time_str = timestamp.split('T')[1][:8] if 'T' in timestamp else timestamp
+            audio_file = trans.get('audio_file')
+            audio_uri = Path(audio_file).resolve().as_uri() if audio_file else ""
+            play_button_html = ""
+            if audio_uri:
+                escaped_audio_uri = json.dumps(audio_uri)
+                play_button_html = (
+                    "<button "
+                    "onclick=\"window.playTransmissionAudio(" + escaped_audio_uri + ", this)\" "
+                    "style=\"float: right; margin-left: 8px; background: #001F2B; color: #00D4FF; "
+                    "border: 1px solid #00D4FF; border-radius: 3px; padding: 1px 6px; cursor: pointer;\" "
+                    "title=\"Play recorded audio\">▶</button>"
+                )
 
             transcript_html += f"""
             <div style="margin-bottom: 1px; padding: 10px; background: #0A0A0A; border-left: 2px solid {color}; animation: fadeInUp 0.3s ease-out;">
@@ -1037,6 +1086,7 @@ class OpenSkyMapApp:
                     <span style="float: right;">W{trans.get('worker_id', '?')}</span>
                 </div>
                 <div style="font-size: 11px; color: #FFFFFF; line-height: 1.4; font-family: 'Consolas', 'Monaco', monospace;">
+                    {play_button_html}
                     {trans.get('transcript', '')[:200]}{'...' if len(trans.get('transcript', '')) > 200 else ''}
                 </div>
             </div>
