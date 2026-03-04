@@ -414,13 +414,15 @@ class DebugMonitor:
 
     def shutdown(self):
         """Close the Tk window and stop the GUI loop."""
-        if self.running:
-            try:
-                # Never call Tk APIs from this thread. Ask the Tk thread to
-                # perform teardown through the queue.
-                self.message_queue.put_nowait({"type": "shutdown"})
-            except Exception:
-                pass
+        if not self.running:
+            return
+
+        try:
+            # Never call Tk APIs from this thread. Ask the Tk thread to
+            # perform teardown through the queue.
+            self.message_queue.put_nowait({"type": "shutdown"})
+        except Exception:
+            pass
 
             # Wait for the GUI thread to finish with timeout
             self._shutdown_complete.wait(timeout=3.0)
