@@ -148,6 +148,7 @@ class DebugMonitor:
         self.response_text: Optional[scrolledtext.ScrolledText] = None
         self.status_label: Optional[ttk.Label] = None
         self.stats_labels: Dict[str, ttk.Label] = {}
+        self._auto_scroll_cb: Optional[ttk.Checkbutton] = None
 
         # Use plain Python bool instead of tk.BooleanVar to avoid
         # threading issues during garbage collection
@@ -161,7 +162,7 @@ class DebugMonitor:
             self._start_gui_thread()
 
     def _start_gui_thread(self):
-        self._thread = threading.Thread(target=self._run_gui, daemon=True)
+        self._thread = threading.Thread(target=self._run_gui, daemon=False)
         self._thread.start()
 
     def _configure_dark_theme(self):
@@ -423,13 +424,13 @@ class DebugMonitor:
         except Exception:
             pass
 
-        # Wait for the GUI thread to finish with timeout
-        self._shutdown_complete.wait(timeout=3.0)
+            # Wait for the GUI thread to finish with timeout
+            self._shutdown_complete.wait(timeout=3.0)
 
-        # Ensure thread is joined
+        # Ensure thread is joined, even if the window was already closed.
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-            self._thread = None
+        self._thread = None
 
     def _do_destroy(self):
         """Called on the Tk mainloop thread to actually destroy the window.
@@ -447,6 +448,7 @@ class DebugMonitor:
             self.response_text = None
             self.status_label = None
             self.stats_labels.clear()
+            self._auto_scroll_cb = None
 
             # Force a GC pass while Tk is still alive to clean up any
             # Tk-associated objects (prevents "main thread not in main loop")
