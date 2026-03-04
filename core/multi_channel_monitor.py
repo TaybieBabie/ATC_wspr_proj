@@ -2,6 +2,9 @@
 multi_channel_monitor.py - Multi-channel ATC monitoring system
 """
 import os
+import re
+import shutil
+import tarfile
 import time
 import threading
 import queue
@@ -19,7 +22,8 @@ from analysis.ollama_correlator import (
     build_adsb_contacts,
     build_atc_transmission,
 )
-from utils.console_logger import info, success, warning, error, section
+from utils import config
+from utils.console_logger import info, success, warning, error, section, logger
 from utils.config import (
     VAD_THRESHOLD,
     SILENCE_DURATION,
@@ -180,6 +184,16 @@ class MultiChannelATCMonitor:
         self.is_monitoring = False
         self.gui_queue = None
 
+        self.session_start_time = None
+        self.session_end_time = None
+        self.logs_root = "logs"
+        self.logs_day_dir = None
+        self.session_dir = None
+        self.session_audio_dir = None
+        self.session_log_path = None
+        self.session_llm_log_path = None
+        self.llm_trace_lock = threading.Lock()
+
         self.transmission_lock = threading.Lock()
         self.channel_transmissions = {}
         self.last_llm_results = {}
@@ -210,7 +224,7 @@ class MultiChannelATCMonitor:
                 'config': config,
                 'recorder': None,
                 'thread': None,
-                'audio_dir': self._create_channel_audio_dir(config),
+                'audio_dir': None,
                 'transcript_dir': self._create_channel_transcript_dir(config)
             }
 
@@ -250,10 +264,55 @@ class MultiChannelATCMonitor:
                 except Exception as exc:
                     warning(f"Failed to initialize LLM correlator: {exc}", emoji="⚠️")
 
+    def _create_session_audio_dir(self):
+        """Create a dedicated session folder under the raw audio root."""
+        if not self.session_start_time:
+            self.session_start_time = datetime.now()
+        session_stamp = self.session_start_time.strftime("%Y%m%d_%H%M%S")
+        session_dir = os.path.join(AUDIO_DIR, f"session_{session_stamp}")
+        os.makedirs(session_dir, exist_ok=True)
+        return session_dir
+
+    def _format_session_time(self, dt_value):
+        """Return 12-hour time (hh:mm AM/PM) for session labeling."""
+        if not dt_value:
+            return "00:00 AM"
+        return dt_value.strftime("%I:%M %p")
+
+    def _create_logs_day_dir(self):
+        """Create logs/<month>/<day> hierarchy on demand."""
+        if not self.session_start_time:
+            self.session_start_time = datetime.now()
+
+        month_name = self.session_start_time.strftime("%b").lower()
+        day = str(self.session_start_time.day)
+        day_dir = os.path.join(self.logs_root, month_name, day)
+        os.makedirs(day_dir, exist_ok=True)
+        self.logs_day_dir = day_dir
+        return day_dir
+
+    def _finalize_session_dir(self):
+        """Create final session directory named with start/end times."""
+        if not self.session_start_time:
+            self.session_start_time = datetime.now()
+        if not self.session_end_time:
+            self.session_end_time = datetime.now()
+
+        day_dir = self.logs_day_dir or self._create_logs_day_dir()
+        start_str = self._format_session_time(self.session_start_time)
+        end_str = self._format_session_time(self.session_end_time)
+        final_dir = os.path.join(day_dir, f"{start_str}-{end_str}")
+        os.makedirs(final_dir, exist_ok=True)
+        self.session_dir = final_dir
+        return final_dir
+
     def _create_channel_audio_dir(self, config):
         """Create directory for channel audio files"""
-        freq_str = config['frequency'].replace('.', 'p')
-        channel_dir = os.path.join(AUDIO_DIR, f"{freq_str}_{config['name'].replace(' ', '_')}")
+        if not self.session_audio_dir:
+            self.session_audio_dir = self._create_session_audio_dir()
+        freq_str = config['frequency'].replace('.', 'p').replace('/', '_')
+        safe_name = config['name'].replace(' ', '_').replace('/', '_')
+        channel_dir = os.path.join(self.session_audio_dir, f"{freq_str}_{safe_name}")
         os.makedirs(channel_dir, exist_ok=True)
         return channel_dir
 
@@ -272,6 +331,25 @@ class MultiChannelATCMonitor:
         """Start monitoring all channels"""
         self.is_monitoring = True
         self.stats['start_time'] = datetime.now()
+        self.session_start_time = self.stats['start_time']
+
+        self._create_logs_day_dir()
+        start_stamp = self.session_start_time.strftime('%Y%m%d_%H%M%S')
+        provisional_session_dir = os.path.join(self.logs_day_dir, f"{self._format_session_time(self.session_start_time)}-ongoing")
+        os.makedirs(provisional_session_dir, exist_ok=True)
+        self.session_dir = provisional_session_dir
+
+        self.session_log_path = os.path.join(
+            self.session_dir,
+            f"session_ledger_{start_stamp}.log"
+        )
+        self.session_llm_log_path = os.path.join(
+            self.session_dir,
+            f"llm_prompt_response_{start_stamp}.jsonl"
+        )
+        logger.set_log_file(self.session_log_path)
+
+        self.session_audio_dir = self._create_session_audio_dir()
 
         section("Starting Multi-Channel ATC Monitor", emoji="🎙️")
         info(f"Monitoring {len(self.channels)} channels")
@@ -292,6 +370,8 @@ class MultiChannelATCMonitor:
         for channel_name, channel_data in self.channels.items():
             config = channel_data['config']
             info(f"Starting {channel_name} on {config['frequency']} MHz")
+
+            channel_data['audio_dir'] = self._create_channel_audio_dir(config)
 
             # Create recorder with custom callback
             recorder = EnhancedLiveATCRecorder(
@@ -470,6 +550,10 @@ class MultiChannelATCMonitor:
         result = self.llm_correlator.correlate(adsb_contacts, recent_transmissions)
         self.last_llm_results[channel_name] = result
 
+        trace_payload = result.pop("__trace", None) if isinstance(result, dict) else None
+        if trace_payload:
+            self._append_llm_prompt_response(channel_name, trace_payload)
+
         if 'error' in result:
             warning(f"[{channel_name}] LLM correlation error: {result['error']}", emoji="⚠️")
             return
@@ -517,6 +601,62 @@ class MultiChannelATCMonitor:
                         'transcript': f"[{channel_name}] {details or transcript_text}",
                     },
                 ))
+
+
+    def _append_llm_prompt_response(self, channel_name, payload):
+        """Persist full LLM prompt/response pairs for the session."""
+        if not self.session_llm_log_path:
+            return
+
+        try:
+            import json
+            trace_payload = {
+                "timestamp": datetime.now().isoformat(),
+                "channel": channel_name,
+                **payload,
+            }
+            with self.llm_trace_lock:
+                with open(self.session_llm_log_path, "a", encoding="utf-8") as trace_file:
+                    trace_file.write(json.dumps(trace_payload) + "\n")
+        except Exception as exc:
+            warning(f"Failed to write LLM prompt/response log: {exc}", emoji="⚠️")
+
+    def finalize_session_artifacts(self):
+        """Finalize session folder naming once end time is known."""
+        if not self.session_dir:
+            return
+
+        final_dir = self._finalize_session_dir()
+        if os.path.abspath(self.session_dir) == os.path.abspath(final_dir):
+            return
+
+        try:
+            for artifact in [self.session_log_path, self.session_llm_log_path]:
+                if artifact and os.path.isfile(artifact):
+                    target_path = os.path.join(final_dir, os.path.basename(artifact))
+                    if os.path.abspath(artifact) != os.path.abspath(target_path):
+                        os.replace(artifact, target_path)
+                        if artifact == self.session_log_path:
+                            self.session_log_path = target_path
+                        elif artifact == self.session_llm_log_path:
+                            self.session_llm_log_path = target_path
+
+            ongoing_dir = self.session_dir
+            if os.path.isdir(ongoing_dir) and ongoing_dir.endswith('-ongoing') and os.path.abspath(ongoing_dir) != os.path.abspath(final_dir):
+                for entry in os.listdir(ongoing_dir):
+                    src_path = os.path.join(ongoing_dir, entry)
+                    dst_path = os.path.join(final_dir, entry)
+                    if os.path.abspath(src_path) == os.path.abspath(dst_path):
+                        continue
+                    if os.path.exists(dst_path):
+                        continue
+                    shutil.move(src_path, dst_path)
+
+                shutil.rmtree(ongoing_dir, ignore_errors=True)
+
+            self.session_dir = final_dir
+        except Exception as exc:
+            warning(f"Failed to finalize session directory: {exc}", emoji="⚠️")
 
     def adsb_update_worker(self):
         """Background thread to update ADS-B data"""
@@ -570,7 +710,49 @@ class MultiChannelATCMonitor:
                 if channel_data['recorder'] and channel_data['recorder'].ffmpeg_process:
                     channel_data['recorder'].ffmpeg_process.terminate()
 
+            self.session_end_time = datetime.now()
             self.print_statistics()
+            logger.close_log_file()
+            self.finalize_session_artifacts()
+            self.archive_session_audio()
+
+    def _session_airport_code(self):
+        """Derive an airport code from configured location name."""
+        match = re.search(r"\(([^)]+)\)", config.LOCATION_NAME or "")
+        if match:
+            return match.group(1).strip().upper()
+
+        token = (config.LOCATION_NAME or "ATC").split()[0]
+        return token.upper()
+
+    def archive_session_audio(self):
+        """Archive this session's audio and ledger into a tarball."""
+        if not self.session_end_time:
+            self.session_end_time = datetime.now()
+
+        airport_code = self._session_airport_code()
+        start_str = self._format_session_time(self.session_start_time)
+        end_str = self._format_session_time(self.session_end_time)
+        date_str = self.session_start_time.strftime("%Y-%m-%d")
+
+        session_dir = self.session_dir or self._finalize_session_dir()
+        tar_name = f"{airport_code} transmissions {start_str} - {end_str} {date_str}.tar"
+        tar_path = os.path.join(session_dir, tar_name)
+
+        try:
+            with tarfile.open(tar_path, "w") as tar:
+                if os.path.isdir(self.session_audio_dir):
+                    tar.add(self.session_audio_dir, arcname=os.path.basename(self.session_audio_dir))
+
+                if self.session_log_path and os.path.isfile(self.session_log_path):
+                    tar.add(self.session_log_path, arcname=os.path.basename(self.session_log_path))
+
+                if self.session_llm_log_path and os.path.isfile(self.session_llm_log_path):
+                    tar.add(self.session_llm_log_path, arcname=os.path.basename(self.session_llm_log_path))
+
+            success(f"Session archive created: {tar_path}", emoji="🗜️")
+        except Exception as exc:
+            error(f"Failed to archive session audio: {exc}")
 
     def print_statistics(self):
         """Print monitoring session statistics"""

@@ -1,5 +1,6 @@
 import threading
 import sys
+import os
 from datetime import datetime
 from enum import Enum
 import time
@@ -68,6 +69,24 @@ class ConsoleLogger:
         self.min_level = min_level
         self.progress_active = False
         self.last_progress_line = ""
+        self.log_file = None
+
+    def set_log_file(self, file_path):
+        """Enable mirroring console logs to a plain text file."""
+        with self.lock:
+            if self.log_file:
+                self.log_file.close()
+            log_dir = os.path.dirname(file_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            self.log_file = open(file_path, "a", encoding="utf-8")
+
+    def close_log_file(self):
+        """Close the active mirrored log file."""
+        with self.lock:
+            if self.log_file:
+                self.log_file.close()
+                self.log_file = None
 
     def _clear_progress(self):
         """Clear the current progress line if one exists"""
@@ -114,6 +133,10 @@ class ConsoleLogger:
 
             print(f"{color_code}{prefix} {message}{reset_code}")
 
+            if self.log_file:
+                self.log_file.write(f"{prefix} {message}\n")
+                self.log_file.flush()
+
             self._restore_progress()
 
     def debug(self, message, emoji="🔍"):
@@ -147,6 +170,11 @@ class ConsoleLogger:
             print("\n" + "=" * 60)
             print(f"{emoji} {title}")
             print("=" * 60)
+            if self.log_file:
+                self.log_file.write("\n" + "=" * 60 + "\n")
+                self.log_file.write(f"{emoji} {title}\n")
+                self.log_file.write("=" * 60 + "\n")
+                self.log_file.flush()
             self._restore_progress()
 
 
